@@ -15,4 +15,4 @@ Existing curved-layer-based process planning methods for multi-axis manufacturin
 <iframe width="100%" height="480" src="https://www.youtube.com/embed/9nTCbEfrANk" title="Planning for Multi-Axis Manufacturing: Direct Control over Collision Avoidance and Toolpath Geometry" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 ## Code
-Thank you for visiting the page. The source code will be released after the acceptance of the paper. Meanwhile, if you have any questions, please drop us a mail: [neelotpal.dutta@manchester.ac.uk](mailto:neelotpal.dutta@manchester.ac.uk).
+Thank you for visiting the page. The source code will be released soon. Meanwhile, if you have any questions, please drop us a mail: [neelotpal.dutta@manchester.ac.uk](mailto:neelotpal.dutta@manchester.ac.uk).
