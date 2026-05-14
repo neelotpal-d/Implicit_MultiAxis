@@ -126,4 +126,4 @@ Use `--max-distance-points` when the SDF grid is too large for memory.
 
 
 ## Contact
-If you have any questions, drop us a [mail](mailto:neelotpal.dutta@manchester.ac.uk)
+If you have any questions, drop us a mail at [neelotpal.dutta@manchester.ac.uk](mailto:neelotpal.dutta@manchester.ac.uk)
