@@ -16,3 +16,6 @@ Existing curved-layer-based process planning methods for multi-axis manufacturin
 
 ## Code
 Thank you for visiting the page. The source code will be released soon. Meanwhile, if you have any questions, please drop us a mail: [neelotpal.dutta@manchester.ac.uk](mailto:neelotpal.dutta@manchester.ac.uk).
+
+## Cite As
+<pre> ```Dutta, N., Zhang, T., Liu, T., Chen, Y. and Wang, C.C., 2025. Implicit Neural Field-Based Process Planning for Multi-Axis Manufacturing: Direct Control over Collision Avoidance and Toolpath Geometry., Computer-Aided Design, accepted, May 2026.``` </pre>
