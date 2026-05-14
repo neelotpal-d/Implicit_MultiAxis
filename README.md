@@ -123,3 +123,7 @@ python sdfField.py train examples/inputs/fertility.obj --save-path examples/chec
 ```
 
 Use `--max-distance-points` when the SDF grid is too large for memory.
+
+
+## Contact
+If you have any questions, drop us a [mail](mailto:neelotpal.dutta@manchester.ac.uk)
