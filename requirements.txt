@@ -1,0 +1,6 @@
+numpy
+pyvista
+libigl
+einops
+matplotlib
+tqdm
