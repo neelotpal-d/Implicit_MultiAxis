@@ -25,10 +25,13 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
+import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from siren_pytorch import SirenNet  # noqa: E402  (sys.path setup above)
 
 OUT_DIR = ROOT / "docs" / "figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -396,38 +399,126 @@ def render_support_angle() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Layer field — 2D level sets (paper colormap)
+# Real-checkpoint loaders
+# ---------------------------------------------------------------------------
+
+
+def _normalise_mesh_points(mesh: pv.PolyData) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Centre + isotropic-half-range normalisation matching shared_utils."""
+    pts = np.asarray(mesh.points)
+    mins = pts.min(axis=0)
+    maxs = pts.max(axis=0)
+    mid_vals = 0.5 * (mins + maxs)
+    range_vals = 0.5 * (maxs - mins).max() * np.ones(3, dtype=np.float32)
+    normed = (pts - mid_vals) / range_vals
+    return normed.astype(np.float32), mid_vals.astype(np.float32), range_vals
+
+
+def _evaluate_siren_on_mesh(
+    mesh: pv.PolyData,
+    checkpoint_path: Path,
+    *,
+    num_layers: int,
+    w0: float,
+    w0_initial: float,
+    hidden_dim: int = 128,
+    batch_size: int = 4096,
+) -> np.ndarray:
+    """Evaluate a trained SIREN scalar field on every mesh vertex.
+
+    Uses CPU off-screen — fast enough for ~50k vertices, avoids the
+    Pyright noise around device juggling. Returns ``(n,)`` scalars.
+    """
+    device = "cpu"
+    net = SirenNet(3, hidden_dim, 1, num_layers, w0=w0, w0_initial=w0_initial).to(device)
+    state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    if "model_state_dict" in state:
+        state = state["model_state_dict"]
+    net.load_state_dict(state)
+    net.eval()
+
+    pts, _, _ = _normalise_mesh_points(mesh)
+    scalars = np.empty(pts.shape[0], dtype=np.float32)
+    for start in range(0, pts.shape[0], batch_size):
+        chunk = pts[start : start + batch_size]
+        tens = torch.tensor(chunk, dtype=torch.float32, device=device, requires_grad=True)
+        out = net(tens, compute_grads=False)
+        scalars[start : start + chunk.shape[0]] = (
+            out["scalars"].detach().cpu().numpy().flatten()
+        )
+    return scalars
+
+
+# ---------------------------------------------------------------------------
+# 5. Layer field — real fertility mesh coloured by the trained f_layer
 # ---------------------------------------------------------------------------
 
 
 def render_layer_field() -> None:
-    fig, ax = plt.subplots(figsize=(7.0, 5.2))
+    """Render the shipped fertility mesh coloured by the trained layer field.
 
-    grid = np.linspace(-1.5, 1.5, 240)
-    xv, yv = np.meshgrid(grid, grid)
-    field = yv + 0.45 * np.exp(-3 * xv**2) * np.cos(1.6 * yv)
+    This is the actual scientific output of the algorithm, not a synthetic
+    illustration — matches the paper's 'Scalar Fields' teaser panel.
+    """
+    mesh_path = ROOT / "examples" / "inputs" / "fertility.obj"
+    ckpt_path = (
+        ROOT / "examples" / "checkpoints"
+        / "parametersTest_batched_fertility_10_128_7_7.pt"
+    )
+    if not (mesh_path.exists() and ckpt_path.exists()):
+        print(f"  skipped layer_field — missing shipped assets")
+        return
 
-    im = ax.imshow(field, origin="lower", extent=(-1.5, 1.5, -1.5, 1.5),
-                   cmap=PAPER_FIELD_CMAP, aspect="equal", alpha=0.95)
-    cs = ax.contour(xv, yv, field, levels=15, colors="white",
-                    linewidths=0.8, alpha=0.6)
-    ax.clabel(cs, inline=True, fontsize=8, fmt="%.2f", colors="white")
+    mesh = pv.read(str(mesh_path))
+    scalars = _evaluate_siren_on_mesh(
+        mesh, ckpt_path, num_layers=10, w0=7.0, w0_initial=7.0
+    )
+    mesh.point_data["f_layer"] = scalars
 
-    sg = np.linspace(-1.3, 1.3, 9)
-    xs, ys = np.meshgrid(sg, sg)
-    fx = -2.7 * xs * np.exp(-3 * xs**2) * np.cos(1.6 * ys)
-    fy = 1 - 1.6 * 0.45 * np.exp(-3 * xs**2) * np.sin(1.6 * ys)
-    mag = np.sqrt(fx**2 + fy**2)
-    ax.quiver(xs, ys, fx / mag, fy / mag, color="white", scale=20,
-              width=0.005, edgecolor=INK, linewidth=0.4)
+    p = _pv_plotter(size=(1100, 900))
+    p.add_mesh(
+        mesh,
+        scalars="f_layer",
+        cmap=PAPER_FIELD_CMAP,
+        smooth_shading=True,
+        show_edges=False,
+        show_scalar_bar=False,
+        ambient=0.22,
+        diffuse=0.82,
+        specular=0.18,
+        specular_power=12,
+    )
+    p.camera_position = "iso"
+    p.camera.zoom(0.92)
+    snap = OUT_DIR / "_fertility_layer_raw.png"
+    p.screenshot(str(snap))
+    p.close()
 
-    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
-    cbar.set_label(r"layer scalar  $f(x, y)$", labelpad=4)
+    # Compose with matplotlib for labels + colourbar + panel frame.
+    fig, ax = plt.subplots(figsize=(7.4, 5.6))
+    ax.imshow(plt.imread(snap))
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+
+    # Synthetic colourbar that matches the on-mesh range.
+    sm = plt.cm.ScalarMappable(
+        cmap=PAPER_FIELD_CMAP,
+        norm=mpl.colors.Normalize(vmin=float(scalars.min()), vmax=float(scalars.max())),
+    )
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
+    cbar.set_label(r"trained layer field  $f_{\text{layer}}$", labelpad=6)
     cbar.outline.set_visible(False)
 
-    ax.set_xlabel("$x$")
-    ax.set_ylabel(r"$y$  (build axis)")
+    ax.text(
+        0.02, 0.97, "fertility — trained layer field",
+        transform=ax.transAxes, fontsize=12, fontweight="bold",
+        color=INK, va="top",
+    )
+    _add_panel_frame(ax)
     _save(fig, "layer_field.png")
+    snap.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +642,189 @@ def render_collision_schedule() -> None:
 
 
 # ---------------------------------------------------------------------------
+# T-bracket trained layer field (real shipped checkpoint)
+# ---------------------------------------------------------------------------
+
+
+def render_tbracket_layer_field() -> None:
+    """T-bracket coloured by its trained layer field, then toolpath field.
+
+    Uses the latest shipped checkpoint in
+    ``examples/outputs/toolpath_alignment_TshapeBracketNew/checkpoints/``.
+    """
+    mesh_path = ROOT / "examples" / "inputs" / "TshapeBracketNew.obj"
+    ckpts_dir = (
+        ROOT / "examples" / "outputs"
+        / "toolpath_alignment_TshapeBracketNew" / "checkpoints"
+    )
+    if not (mesh_path.exists() and ckpts_dir.exists()):
+        print("  skipped tbracket_layer — missing shipped assets")
+        return
+
+    layer_ckpts = sorted(ckpts_dir.glob("*_scalar_field_epoch_*.pt"))
+    if not layer_ckpts:
+        print("  skipped tbracket_layer — no layer checkpoint found")
+        return
+
+    mesh = pv.read(str(mesh_path))
+    scalars = _evaluate_siren_on_mesh(
+        mesh, layer_ckpts[-1], num_layers=10, w0=7.0, w0_initial=7.0
+    )
+    mesh.point_data["f_layer"] = scalars
+
+    p = _pv_plotter(size=(1100, 900))
+    p.add_mesh(
+        mesh,
+        scalars="f_layer",
+        cmap=PAPER_FIELD_CMAP,
+        smooth_shading=True,
+        show_edges=False,
+        show_scalar_bar=False,
+        ambient=0.22,
+        diffuse=0.82,
+        specular=0.18,
+        specular_power=12,
+    )
+    p.camera_position = "iso"
+    p.camera.zoom(0.92)
+    snap = OUT_DIR / "_tbracket_layer_raw.png"
+    p.screenshot(str(snap))
+    p.close()
+
+    fig, ax = plt.subplots(figsize=(7.4, 5.6))
+    ax.imshow(plt.imread(snap))
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+
+    sm = plt.cm.ScalarMappable(
+        cmap=PAPER_FIELD_CMAP,
+        norm=mpl.colors.Normalize(vmin=float(scalars.min()), vmax=float(scalars.max())),
+    )
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
+    cbar.set_label(r"trained layer field  $f_{\text{layer}}$", labelpad=6)
+    cbar.outline.set_visible(False)
+    ax.text(
+        0.02, 0.97, "T-bracket — trained layer field",
+        transform=ax.transAxes, fontsize=12, fontweight="bold",
+        color=INK, va="top",
+    )
+    _add_panel_frame(ax)
+    _save(fig, "tbracket_layer_field.png")
+    snap.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Teaser — 3-panel composition matching the paper's teaser style
+# ---------------------------------------------------------------------------
+
+
+def render_teaser() -> None:
+    """Compose the input mesh / trained field / toolpath field into a single
+    paper-style teaser figure."""
+    mesh_path = ROOT / "examples" / "inputs" / "fertility.obj"
+    ckpt_path = (
+        ROOT / "examples" / "checkpoints"
+        / "parametersTest_batched_fertility_10_128_7_7.pt"
+    )
+    if not (mesh_path.exists() and ckpt_path.exists()):
+        print("  skipped teaser — missing shipped fertility assets")
+        return
+
+    mesh = pv.read(str(mesh_path))
+    scalars = _evaluate_siren_on_mesh(
+        mesh, ckpt_path, num_layers=10, w0=7.0, w0_initial=7.0
+    )
+
+    def render(mesh_obj: pv.PolyData, *, with_scalars: bool, tag: str) -> Path:
+        p = _pv_plotter(size=(600, 600))
+        if with_scalars:
+            mesh_obj = mesh_obj.copy()
+            mesh_obj.point_data["f"] = scalars
+            p.add_mesh(
+                mesh_obj, scalars="f", cmap=PAPER_FIELD_CMAP,
+                smooth_shading=True, show_edges=False, show_scalar_bar=False,
+                ambient=0.22, diffuse=0.82, specular=0.18, specular_power=12,
+            )
+        else:
+            p.add_mesh(
+                mesh_obj, color=MESH, smooth_shading=True, show_edges=False,
+                ambient=0.22, diffuse=0.82, specular=0.18, specular_power=12,
+            )
+        p.camera_position = "iso"
+        p.camera.zoom(0.95)
+        snap = OUT_DIR / f"_teaser_{tag}_raw.png"
+        p.screenshot(str(snap))
+        p.close()
+        return snap
+
+    snap_input = render(mesh, with_scalars=False, tag="input")
+    snap_field = render(mesh, with_scalars=True, tag="field")
+
+    # Iso-surfaces of the layer field, drawn ON the mesh, as a proxy for the
+    # "layer surfaces / toolpath" output panel.
+    mesh_for_contours = mesh.copy()
+    mesh_for_contours.point_data["f"] = scalars
+    levels = np.linspace(float(scalars.min()) + 0.05,
+                         float(scalars.max()) - 0.05, 14)
+    contours = mesh_for_contours.contour(levels, scalars="f")
+    p = _pv_plotter(size=(600, 600))
+    p.add_mesh(
+        mesh, color=MESH, smooth_shading=True, show_edges=False,
+        opacity=0.35, ambient=0.18, diffuse=0.78, specular=0.10,
+    )
+    p.add_mesh(contours, scalars="f", cmap=PAPER_FIELD_CMAP, line_width=2.0,
+               show_scalar_bar=False)
+    p.camera_position = "iso"
+    p.camera.zoom(0.95)
+    snap_layers = OUT_DIR / "_teaser_layers_raw.png"
+    p.screenshot(str(snap_layers))
+    p.close()
+
+    # Compose 1x3 grid in matplotlib for clean Helvetica labels + panel frames.
+    fig, axes = plt.subplots(1, 3, figsize=(13, 5))
+    titles = (
+        ("Comp. Domain",       r"$\Omega$"),
+        ("Trained Field",      r"$f_{\text{layer}}$"),
+        ("Implicit Layers",    r"$f_{\text{layer}}^{-1}(c)$"),
+    )
+    snaps = (snap_input, snap_field, snap_layers)
+    for ax, (title, math_label), snap in zip(axes, titles, snaps):
+        ax.imshow(plt.imread(snap))
+        ax.set_xticks([]); ax.set_yticks([])
+        for s in ax.spines.values():
+            s.set_visible(False)
+        ax.set_title(title, fontsize=12, pad=8, fontweight="bold")
+        ax.text(
+            0.98, 0.04, math_label, transform=ax.transAxes,
+            fontsize=14, color=INK, ha="right", va="bottom",
+        )
+        _add_panel_frame(ax)
+
+    # Inter-panel arrows (paper-style flow).
+    fig.canvas.draw()
+    for ax_left, ax_right in zip(axes[:-1], axes[1:]):
+        # Bounds in figure coordinates.
+        bbox_l = ax_left.get_position()
+        bbox_r = ax_right.get_position()
+        y = (bbox_l.y0 + bbox_l.y1) / 2
+        fig.add_artist(
+            mpl.patches.FancyArrowPatch(
+                (bbox_l.x1, y), (bbox_r.x0, y),
+                arrowstyle="-|>", mutation_scale=20,
+                lw=1.6, color=INK,
+            )
+        )
+
+    fig.tight_layout()
+    _save(fig, "teaser.png")
+    for snap in snaps:
+        snap.unlink()
+    snap_layers.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # 8. Geodesic curvature (PyVista surface + path)
 # ---------------------------------------------------------------------------
 
@@ -624,6 +898,8 @@ if __name__ == "__main__":
     render_tool_envelope()
     render_support_angle()
     render_layer_field()
+    render_tbracket_layer_field()
+    render_teaser()
     render_curvature_regimes()
     render_collision_schedule()
     render_geodesic_curvature()
