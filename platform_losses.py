@@ -28,7 +28,7 @@ class PlatformModel(nn.Module):
 
     The platform is modelled as a half-space, parameterised by a base
     point and outward direction. Both are :class:`nn.Parameter` so they
-    can be jointly optimised with the scalar field. ``getPlatformPosLoss``
+    can be jointly optimised with the scalar field. ``get_platform_pos_loss``
     sums four constraints:
 
     - direction error against locally-detected build directions,
@@ -40,42 +40,42 @@ class PlatformModel(nn.Module):
     def __init__(self, device: str = "cuda", scale: float = 1.0) -> None:
         super().__init__()
         self.device = device
-        self.platformBase = nn.Parameter(torch.tensor([[0, 0, 0]], dtype=torch.float32, device=self.device))
-        self.platformDir = nn.Parameter(torch.tensor([[0, 1, 0]], dtype=torch.float32, device=self.device))
-        self.selectedPoints: torch.Tensor | None = None
-        self.targetDirs: torch.Tensor | None = None
-        self.dispDist: float = 5.00 / scale
-        self.dispDist2: float = 5.00 / scale
+        self.platform_base = nn.Parameter(torch.tensor([[0, 0, 0]], dtype=torch.float32, device=self.device))
+        self.platform_dir = nn.Parameter(torch.tensor([[0, 1, 0]], dtype=torch.float32, device=self.device))
+        self.selected_points: torch.Tensor | None = None
+        self.target_dirs: torch.Tensor | None = None
+        self.disp_dist: float = 5.00 / scale
+        self.disp_dist2: float = 5.00 / scale
         self.scale: float = scale
 
-    def selectPoints(
+    def select_points(
         self,
-        surfacePoints: torch.Tensor,
-        surfaceGrads: torch.Tensor,
-        surfaceNormals: torch.Tensor,
+        surface_points: torch.Tensor,
+        surface_grads: torch.Tensor,
+        surface_normals: torch.Tensor,
     ) -> None:
         """Identify boundary points whose layer-gradient direction needs platform support.
 
-        Sets ``self.selectedPoints`` and ``self.targetDirs`` in-place.
+        Sets ``self.selected_points`` and ``self.target_dirs`` in-place.
         """
-        gradNorm = torch.norm(surfaceGrads, dim=1).unsqueeze(1)
-        surfaceGrads = surfaceGrads / (gradNorm + DENOM_FLOOR)
-        dotProd = torch.sum(surfaceNormals * surfaceGrads, dim=1)
+        grad_norm = torch.norm(surface_grads, dim=1).unsqueeze(1)
+        surface_grads = surface_grads / (grad_norm + DENOM_FLOOR)
+        dot_prod = torch.sum(surface_normals * surface_grads, dim=1)
 
-        supportError = -dotProd + np.cos(np.deg2rad(_PLATFORM_SUPPORT_ANGLE_DEG))
-        supportMask = torch.relu(supportError) > 0.0
+        support_error = -dot_prod + np.cos(np.deg2rad(_PLATFORM_SUPPORT_ANGLE_DEG))
+        support_mask = torch.relu(support_error) > 0.0
 
-        self.selectedPoints = surfacePoints[supportMask].detach()
-        self.selectedPoints.requires_grad = True
-        self.targetDirs = surfaceGrads[supportMask].detach()
+        self.selected_points = surface_points[support_mask].detach()
+        self.selected_points.requires_grad = True
+        self.target_dirs = surface_grads[support_mask].detach()
 
     def sample_circle_around_gradient(
         self,
         points: torch.Tensor,
         grads: torch.Tensor,
         k: int,
-        l: float,
-        r: float,
+        axial_distance: float,
+        radius: float,
     ) -> torch.Tensor:
         """Sample clearance-check points on a circle around each gradient axis.
 
@@ -83,14 +83,15 @@ class PlatformModel(nn.Module):
             points: ``(n, 3)`` base points.
             grads: ``(n, 3)`` gradient at each base point.
             k: Samples per circle.
-            l: Distance along the gradient at which to place the circle centre.
-            r: Circle radius.
+            axial_distance: Distance along the gradient at which to place
+                the circle centre.
+            radius: Circle radius.
 
         Returns:
             ``(n, k, 3)`` sampled points.
         """
         axis = grads / (grads.norm(dim=1, keepdim=True) + DENOM_FLOOR)
-        axial_points = points + l * axis
+        axial_points = points + axial_distance * axis
 
         rand_vec = torch.randn(points.shape[0], 3, device=self.device)
         rand_vec = rand_vec - (rand_vec * axis).sum(dim=1, keepdim=True) * axis
@@ -102,57 +103,57 @@ class PlatformModel(nn.Module):
         sines = torch.sin(angles).view(1, k, 1)
 
         radial_dirs = cosines * radial1.unsqueeze(1) + sines * radial2.unsqueeze(1)
-        return axial_points.unsqueeze(1) + r * radial_dirs
+        return axial_points.unsqueeze(1) + radius * radial_dirs
 
-    def getPlatformPosLoss(
+    def get_platform_pos_loss(
         self,
-        surfacePoints: torch.Tensor,
-        surfaceGrads: torch.Tensor,
-        surfaceNormals: torch.Tensor,
+        surface_points: torch.Tensor,
+        surface_grads: torch.Tensor,
+        surface_normals: torch.Tensor,
     ) -> torch.Tensor:
         """Total platform loss: direction + distance + outer/inner clearance."""
-        self.selectPoints(surfacePoints, surfaceGrads, surfaceNormals)
+        self.select_points(surface_points, surface_grads, surface_normals)
 
-        platformDirNorm = torch.norm(self.platformDir) + DENOM_FLOOR
+        platform_dir_norm = torch.norm(self.platform_dir) + DENOM_FLOOR
 
-        if self.targetDirs is not None:
-            dirError = self.targetDirs - (self.platformDir / platformDirNorm)
-            dirLoss = torch.mean(dirError * dirError)
+        if self.target_dirs is not None:
+            dir_error = self.target_dirs - (self.platform_dir / platform_dir_norm)
+            dir_loss = torch.mean(dir_error * dir_error)
         else:
-            dirLoss = torch.zeros((), device=surfacePoints.device)
+            dir_loss = torch.zeros((), device=surface_points.device)
 
-        if self.selectedPoints is not None:
-            dispVector = surfacePoints.detach() - self.platformBase
-            disps = torch.sum(dispVector * self.platformDir / platformDirNorm, dim=1)
-            disps = disps - self.dispDist
-            dispError2 = torch.min(disps)
-            dispLoss2 = torch.mean(dispError2 * dispError2)
+        if self.selected_points is not None:
+            disp_vector = surface_points.detach() - self.platform_base
+            disps = torch.sum(disp_vector * self.platform_dir / platform_dir_norm, dim=1)
+            disps = disps - self.disp_dist
+            disp_error2 = torch.min(disps)
+            disp_loss2 = torch.mean(disp_error2 * disp_error2)
         else:
-            dispLoss2 = torch.zeros((), device=surfacePoints.device)
+            disp_loss2 = torch.zeros((), device=surface_points.device)
 
-        checkSamples = self.sample_circle_around_gradient(
-            surfacePoints, surfaceGrads, 6, 60 / self.scale, 25 / self.scale
+        check_samples = self.sample_circle_around_gradient(
+            surface_points, surface_grads, 6, 60 / self.scale, 25 / self.scale
         )
-        dispLossCol = self._platform_clearance_loss(checkSamples, platformDirNorm)
+        clear_loss_outer = self._platform_clearance_loss(check_samples, platform_dir_norm)
 
-        checkSamples = self.sample_circle_around_gradient(
-            surfacePoints, surfaceGrads, 6, 30 / self.scale, 20 / self.scale
+        check_samples = self.sample_circle_around_gradient(
+            surface_points, surface_grads, 6, 30 / self.scale, 20 / self.scale
         )
-        dispLossCol2 = self._platform_clearance_loss(checkSamples, platformDirNorm)
+        clear_loss_inner = self._platform_clearance_loss(check_samples, platform_dir_norm)
 
-        return dirLoss + _W_DISP2 * dispLoss2 + _W_CLEAR_OUTER * dispLossCol + _W_CLEAR_INNER * dispLossCol2
+        return dir_loss + _W_DISP2 * disp_loss2 + _W_CLEAR_OUTER * clear_loss_outer + _W_CLEAR_INNER * clear_loss_inner
 
-    def _platform_clearance_loss(self, checkSamples: torch.Tensor, platformDirNorm: torch.Tensor) -> torch.Tensor:
+    def _platform_clearance_loss(self, check_samples: torch.Tensor, platform_dir_norm: torch.Tensor) -> torch.Tensor:
         """Penalise sampled points that fall inside the platform clearance band."""
-        checkSamples = checkSamples.view(-1, 3)
-        dispVector = checkSamples.detach() - self.platformBase
-        disps = torch.sum(dispVector * self.platformDir / platformDirNorm, dim=1)
-        disps = self.dispDist2 - disps
-        dispError = _PLATFORM_CLEARANCE_RELU_SCALING * torch.relu(disps)
-        errorMask = dispError > 0
-        if torch.sum(errorMask) < 1:
-            return torch.zeros((), device=checkSamples.device)
-        return torch.mean(dispError[errorMask] * dispError[errorMask])
+        check_samples = check_samples.view(-1, 3)
+        disp_vector = check_samples.detach() - self.platform_base
+        disps = torch.sum(disp_vector * self.platform_dir / platform_dir_norm, dim=1)
+        disps = self.disp_dist2 - disps
+        disp_error = _PLATFORM_CLEARANCE_RELU_SCALING * torch.relu(disps)
+        error_mask = disp_error > 0
+        if torch.sum(error_mask) < 1:
+            return torch.zeros((), device=check_samples.device)
+        return torch.mean(disp_error[error_mask] * disp_error[error_mask])
 
 
 def add_platform_loss(
@@ -169,5 +170,5 @@ def add_platform_loss(
         return loss, 0
 
     boundary_outs = scalar_field(boundary_points)
-    platform_loss = platform_model.getPlatformPosLoss(boundary_points, boundary_outs["grads"], boundary_normals)
+    platform_loss = platform_model.get_platform_pos_loss(boundary_points, boundary_outs["grads"], boundary_normals)
     return loss + platform_loss, platform_loss

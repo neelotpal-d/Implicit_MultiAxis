@@ -4,7 +4,7 @@ These tests are written *before* the fixes land — they fail on the buggy
 implementation, pass after the fix, and stay green as long as nobody
 reintroduces the bug.
 
-1. ``shared_geometry.supportLoss`` used the literal ``3.1457`` in place of
+1. ``shared_geometry.support_loss`` used the literal ``3.1457`` in place of
    ``pi``. The discrepancy (4.1e-4 absolute, ~0.13 % relative) shifts the
    support-angle threshold by ~0.17°. Same bug in ``platform_losses.py`` and
    ``collisionLoss.py``.
@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 
 from collisionLoss import get_cone_sample_direction_cosines3
 from field_losses import add_collision_losses
-from shared_geometry import supportLoss
+from shared_geometry import support_loss
 
 
 def test_support_loss_uses_pi_not_3p1457():
@@ -51,9 +51,9 @@ def test_support_loss_uses_pi_not_3p1457():
     normals = torch.tensor([[1.0, 0.0, 0.0]])
     grads = torch.tensor([[target_cos, math.sqrt(1.0 - target_cos**2), 0.0]])
 
-    out = supportLoss(normals, grads, angle_degrees=132.0)
+    out = support_loss(normals, grads, angle_degrees=132.0)
     assert out["loss"].item() > 0.0, (
-        "supportLoss returned zero at a dot product that should be inside the "
+        "support_loss returned zero at a dot product that should be inside the "
         "support-angle violation region — most likely the threshold is still "
         "computed with the literal 3.1457 instead of math.pi."
     )

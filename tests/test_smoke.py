@@ -5,7 +5,7 @@ These tests do not retrain anything — they validate that:
 - ``repro.resolve_device`` picks a real torch device and refuses impossible ones.
 - ``repro.set_global_seed`` produces bit-exact RNG sequences across runs.
 - A SIREN layer field with the second-order autograd path used by
-  ``shared_geometry.computePrincipalCurvatures`` can run on the device that
+  ``shared_geometry.compute_principal_curvatures`` can run on the device that
   ``resolve_device("auto")`` selects on the host. This is the path the
   ``support_free_pipeline`` / ``toolpath_alignment_pipeline`` rely on.
 - The shipped fertility checkpoint loads cleanly with ``map_location`` set

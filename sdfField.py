@@ -304,7 +304,7 @@ def train_sdf_from_mesh(
 class SDFModel:
     """Small wrapper around the SDF SIREN used by collision losses."""
 
-    def __init__(self, device="cuda", model_load_path=None):
+    def __init__(self, device: str = "cuda", model_load_path: str | None = None) -> None:
         self.device = device
         self.model = build_sdf_network(device)
         if model_load_path:
@@ -312,22 +312,22 @@ class SDFModel:
 
     def train(
         self,
-        points_dist,
-        scalars_dist,
-        points_surf,
-        normals_surf,
-        lr=1e-5,
-        epochNum=60,
-        savePath="./outSDF.pt",
-        batch_size=3000,
-    ):
-        """Compatibility wrapper for the older training call style."""
+        points_dist: torch.Tensor,
+        scalars_dist: torch.Tensor,
+        points_surf: torch.Tensor,
+        normals_surf: torch.Tensor,
+        lr: float = 1e-5,
+        epoch_count: int = 60,
+        save_path: str = "./outSDF.pt",
+        batch_size: int = 3000,
+    ) -> torch.nn.Module:
+        """Train the wrapped SDF model from distance + surface samples."""
         config = SDFTrainingConfig(
             device=self.device,
             learning_rate=lr,
-            epoch_count=epochNum,
+            epoch_count=epoch_count,
             batch_size=batch_size,
-            save_path=savePath,
+            save_path=save_path,
         )
         return train_sdf_model(
             self.model,
@@ -338,17 +338,13 @@ class SDFModel:
             config,
         )
 
-    def predictOuts(self, points, batch_size=100):
-        """Compatibility wrapper returning batched SDF scalar predictions."""
+    def predict_outs(self, points: torch.Tensor, batch_size: int = 100) -> dict:
+        """Batched SDF scalar predictions."""
         return predict_scalars(self.model, points, batch_size=batch_size)
 
-    def predictGrads(self, points, batch_size=100):
-        """Compatibility wrapper returning SDF gradients."""
+    def predict_grads(self, points: torch.Tensor, batch_size: int = 100) -> dict:
+        """SDF gradient predictions."""
         return predict_grads(self.model, points)
-
-
-sdfModel = SDFModel
-samplePointsNearSurf = sample_points_near_surface
 
 
 def parse_args():

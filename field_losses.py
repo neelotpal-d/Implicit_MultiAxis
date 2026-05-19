@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from constants import DENOM_FLOOR
-from shared_geometry import computeGeodesicCurvature2, computePrincipalCurvatures, supportLoss
+from shared_geometry import compute_geodesic_curvature2, compute_principal_curvatures, support_loss
 from training_dataclasses import loss_enabled
 
 # ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def compute_layer_loss(batch_input_points, scalar_field, data, config, master_sw
 
     if loss_enabled(config, "use_curvature_loss"):
         # Limit principal curvature after normalizing by the mesh scale.
-        curvatures = computePrincipalCurvatures(
+        curvatures = compute_principal_curvatures(
             out["HX2"],
             out["HY2"],
             out["HZ2"],
@@ -249,7 +249,7 @@ def add_boundary_support_loss(loss, scalar_field, batch_bound_points, batch_boun
         return loss, 0
 
     out = scalar_field(batch_bound_points)
-    support_out = supportLoss(batch_bound_normals, out["grads"])
+    support_out = support_loss(batch_bound_normals, out["grads"])
     boundary_loss = support_out["loss"]
     return loss + boundary_loss, boundary_loss
 
@@ -290,7 +290,7 @@ def compute_toolpath_loss(
     grad_error = project_norm - target_norm
     grad_norm_loss = torch.mean(torch.abs(grad_error * grad_error))
 
-    curvatures_tp = computeGeodesicCurvature2(
+    curvatures_tp = compute_geodesic_curvature2(
         field1_grads_orig,
         grads2,
         primary_out["HX2"],

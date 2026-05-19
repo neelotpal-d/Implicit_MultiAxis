@@ -202,8 +202,8 @@ def add_toolpath_curves_to_plotter(
 
 def add_platform_plane_to_plotter(plotter, platform, mid_vals, range_vals, size=250):
     """Draw the learned platform plane in physical coordinates."""
-    platform_pos = platform.platformBase.detach() * range_vals + mid_vals
-    platform_dir = platform.platformDir.detach()
+    platform_pos = platform.platform_base.detach() * range_vals + mid_vals
+    platform_dir = platform.platform_dir.detach()
     platform_dir = platform_dir / (torch.norm(platform_dir, dim=1, keepdim=True) + DENOM_FLOOR)
 
     center = platform_pos.squeeze(0).to("cpu").numpy()

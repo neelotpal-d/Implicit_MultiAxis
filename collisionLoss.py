@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from sdfField import sdfModel
+from sdfField import SDFModel
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -349,9 +349,9 @@ class CollisionLoss:
         # init_tool.
         self.sampled_directions_seed = get_cone_sample_direction_cosines3(angle, sample_num, device=device)
         self.dist_vals = torch.tensor(list(distList), dtype=torch.float32, device=device)
-        self.sdfModel: sdfModel | None = None
+        self.sdf_model: SDFModel | None = None
         if model_load_path:
-            self.sdfModel = sdfModel(device=device, model_load_path=model_load_path)
+            self.sdf_model = SDFModel(device=device, model_load_path=model_load_path)
         self.device = device
         self.dist_array_far: torch.Tensor | None = None
         self.radi_far: float | None = None
@@ -385,15 +385,15 @@ class CollisionLoss:
 
     # ----- internal helpers -------------------------------------------------
 
-    def _combined_in_mask(self, sample_points: torch.Tensor, limVals) -> torch.Tensor:
+    def _combined_in_mask(self, sample_points: torch.Tensor, lim_vals) -> torch.Tensor:
         """Combine the axis-aligned domain mask with the optional SDF mask.
 
-        ``limFun`` is only consulted when an SDF model is loaded; this lets
+        ``lim_fun`` is only consulted when an SDF model is loaded; this lets
         the loss focus on samples inside the modelled part / valid domain.
         """
-        in_mask = self.limModel(sample_points, limVals)
-        if self.sdfModel is not None:
-            in_mask_sdf = self.limFun(sample_points)
+        in_mask = self.lim_model(sample_points, lim_vals)
+        if self.sdf_model is not None:
+            in_mask_sdf = self.lim_fun(sample_points)
             assert in_mask.shape == in_mask_sdf.shape
             in_mask = in_mask * in_mask_sdf
         return in_mask
@@ -433,7 +433,7 @@ class CollisionLoss:
         grads: torch.Tensor,
         scalars: torch.Tensor,
         scalarField,
-        limVals=(1.0, 1.0, 1.0),
+        lim_vals=(1.0, 1.0, 1.0),
     ) -> dict:
         """Cone-envelope loss based on scalar ordering along candidate tool paths."""
         grad_unit = grads / (grads.norm(dim=1, keepdim=True) + DENOM_FLOOR)
@@ -446,7 +446,7 @@ class CollisionLoss:
         scalar_comp = self._scalar_compensation(scalars, _SCALAR_COMP_RATIO_NEAR)
         errors = scalars_at_base - scalar_at_samples + scalar_comp.detach()
 
-        in_mask = self._combined_in_mask(sample_points, limVals)
+        in_mask = self._combined_in_mask(sample_points, lim_vals)
         ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {
@@ -463,7 +463,7 @@ class CollisionLoss:
         grads: torch.Tensor,
         scalars: torch.Tensor,
         scalarField,
-        limVals=(1.0, 1.0, 1.0),
+        lim_vals=(1.0, 1.0, 1.0),
         dist_array=(0.3, 0.45, 0.6),
         radi_: float = 0.3,
         n_angles: int = 10,
@@ -483,7 +483,7 @@ class CollisionLoss:
         scalar_comp = self._scalar_compensation(scalars, _SCALAR_COMP_RATIO_FAR)
         errors = scalars_at_base - scalar_at_samples + scalar_comp.detach()
 
-        in_mask = self._combined_in_mask(sample_points, limVals)
+        in_mask = self._combined_in_mask(sample_points, lim_vals)
         ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
@@ -494,7 +494,7 @@ class CollisionLoss:
         grads: torch.Tensor,
         scalars: torch.Tensor,
         scalarField,
-        limVals=(1.0, 1.0, 1.0),
+        lim_vals=(1.0, 1.0, 1.0),
         dist_array=(0.3, 0.45, 0.6),
         radi_: float = 0.3,
         n_angles: int = 10,
@@ -519,7 +519,7 @@ class CollisionLoss:
         scalar_comp = self._scalar_compensation(scalars, _SCALAR_COMP_RATIO_FAR)
         errors = scalars_at_base - scalar_at_samples + scalar_comp.detach()
 
-        in_mask = self._combined_in_mask(sample_points, limVals)
+        in_mask = self._combined_in_mask(sample_points, lim_vals)
         ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
@@ -530,7 +530,7 @@ class CollisionLoss:
         grads: torch.Tensor,
         scalars: torch.Tensor,
         scalarField,
-        limVals=(1.0, 1.0, 1.0),
+        lim_vals=(1.0, 1.0, 1.0),
         dist_array=(0.1, 0.15, 0.45),
         radi_: float = 0.15,
     ) -> dict:
@@ -551,28 +551,28 @@ class CollisionLoss:
         # strictly above the base scalar, with no zero-margin slack.
         errors = scalars_at_base - scalar_at_samples
 
-        in_mask = self._combined_in_mask(sample_points, limVals)
+        in_mask = self._combined_in_mask(sample_points, lim_vals)
         ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
 
     # ----- masks ------------------------------------------------------------
 
-    def limModel(self, points: torch.Tensor, limVals) -> torch.Tensor:
+    def lim_model(self, points: torch.Tensor, lim_vals) -> torch.Tensor:
         """Axis-aligned normalised-domain mask used before averaging errors."""
-        x_mask = torch.abs(points[..., 0]) < limVals[0]
-        y_mask = torch.abs(points[..., 1]) < limVals[1]
-        z_mask = torch.abs(points[..., 2]) < limVals[2]
+        x_mask = torch.abs(points[..., 0]) < lim_vals[0]
+        y_mask = torch.abs(points[..., 1]) < lim_vals[1]
+        z_mask = torch.abs(points[..., 2]) < lim_vals[2]
         return x_mask * y_mask * z_mask
 
-    def limFun(self, points: torch.Tensor) -> torch.Tensor:
+    def lim_fun(self, points: torch.Tensor) -> torch.Tensor:
         """Optional learned-SDF mask; True where samples are inside the SDF model.
 
         Only meaningful when a SDF checkpoint was passed to ``__init__``.
         """
-        if self.sdfModel is None:
+        if self.sdf_model is None:
             return torch.ones(points.shape[:-1], dtype=torch.bool, device=points.device)
-        out_vals = self.sdfModel.predictOuts(points)
+        out_vals = self.sdf_model.predict_outs(points)
         in_mask = out_vals["scalars"] < 0
         assert in_mask.shape[-1] == 1
         return in_mask[..., 0]
