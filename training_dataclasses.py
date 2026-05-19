@@ -16,6 +16,9 @@ class CommonTrainingConfig:
 
     model_name: str = ""
     device: str = "cuda"
+    # 'auto' picks cuda > mps > cpu via repro.resolve_device.
+    # The pipelines overwrite this field with the resolved device at startup.
+    seed: int = 42
 
     # Input files. Empty optional paths are allowed for workflows that do not
     # need stress data, toolpath checkpoints, platform checkpoints, or SDF data.

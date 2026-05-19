@@ -12,15 +12,26 @@
 
 ## Setup
 
-Install PyTorch separately first so it matches your machine and CUDA version. Use the official PyTorch install selector for the right command.
-
-Then install the remaining Python dependencies:
+Recommended via pixi (one-shot install, lockfile-pinned, picks up MPS on Apple Silicon and CUDA on Linux):
 
 ```bash
+pixi install
+pixi run smoke          # validates the env on the resolved device
+pixi run support-free   # runs the fertility pipeline end-to-end
+```
+
+Or via pip (install PyTorch separately so it matches your CUDA / MPS / CPU setup):
+
+```bash
+pip install torch       # M-series Macs get MPS automatically; for CUDA see https://pytorch.org/get-started/locally/
 pip install -r requirements.txt
 ```
 
+The pipeline configs default to `"device": "cuda"`. On Apple Silicon set it to `"auto"` (which picks `cuda > mps > cpu`) or to `"mps"` explicitly. `repro.resolve_device` raises a clear error if you ask for a device the host doesn't have rather than silently falling back.
+
 The structured scripts expect the local `siren_pytorch` folder to remain in this repository.
+
+See `reproduce.md` for the full reproducibility recipe (tiered by ambition: render shipped checkpoints, retrain shipped configs, reproduce other paper figures, bit-exact regeneration).
 
 ## Examples
 

@@ -35,17 +35,17 @@ class PlatformModel(nn.Module):
         self.selectedPoints.requires_grad = True
         self.targetDirs = surfaceGrads[supportMask].detach()
 
-    def sample_circle_around_gradient(self, points, grads, k, l, r, device="cuda"):
+    def sample_circle_around_gradient(self, points, grads, k, l, r):
         """Sample clearance-check points on circles around each gradient axis."""
         axis = grads / (grads.norm(dim=1, keepdim=True) + 1e-8)
         axial_points = points + l * axis
 
-        rand_vec = torch.randn(points.shape[0], 3, device=device)
+        rand_vec = torch.randn(points.shape[0], 3, device=self.device)
         rand_vec = rand_vec - (rand_vec * axis).sum(dim=1, keepdim=True) * axis
         radial1 = rand_vec / (rand_vec.norm(dim=1, keepdim=True) + 1e-8)
         radial2 = torch.cross(axis, radial1)
 
-        angles = torch.linspace(0, 2 * torch.pi, steps=k, device=device)
+        angles = torch.linspace(0, 2 * torch.pi, steps=k, device=self.device)
         cosines = torch.cos(angles).view(1, k, 1)
         sines = torch.sin(angles).view(1, k, 1)
 
