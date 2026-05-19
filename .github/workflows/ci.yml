@@ -40,3 +40,8 @@ jobs:
       # checkpoint loads on MPS end-to-end.
       - name: Smoke (Tier 0 — shipped checkpoint load)
         run: pixi run smoke
+
+      # Build the docs site (renders diagrams from code first via depends-on)
+      # to catch broken mkdocs config / broken figure rendering before merge.
+      - name: Docs build (strict)
+        run: pixi run docs-build

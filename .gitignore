@@ -20,6 +20,11 @@ venv/
 # mkdocs build output
 /site/
 
+# Generated diagrams. The source of truth is scripts/render_diagrams.py;
+# `pixi run render-diagrams` (or `pixi run docs-build`) regenerates them.
+# Committed PNGs would drift from the code that produces them.
+docs/figures/*.png
+
 # Training outputs that should not be committed (already-shipped reference
 # checkpoints live under examples/outputs/* and examples/checkpoints/* and
 # are tracked explicitly; new local runs land in the same place).
