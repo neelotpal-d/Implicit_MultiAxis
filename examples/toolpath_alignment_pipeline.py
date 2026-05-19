@@ -1,9 +1,9 @@
 """Example training pipeline for layer and toolpath alignment."""
 
-from dataclasses import dataclass
-from pathlib import Path
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 # Allow this example script to import shared modules from the repository root
 # when launched directly as `python examples/toolpath_alignment_pipeline.py`.
@@ -11,7 +11,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import numpy as np
 import pyvista as pv
 import torch
 import torch.nn as nn
@@ -25,6 +24,7 @@ from experiment_loaders import (
 )
 from field_losses import compute_layer_loss, compute_stress_losses, compute_toolpath_loss
 from platform_losses import PlatformModel, add_platform_loss
+from repro import resolve_device, set_global_seed
 from training_dataclasses import CommonTrainingConfig, load_config
 from training_outputs import (
     append_loss_records,
@@ -38,10 +38,7 @@ from training_outputs import (
 )
 
 
-np.bool = np.bool_
-
-
-@dataclass
+@dataclass(frozen=True)
 class ToolpathAlignmentPreparedData:
     """Geometry, stress samples, and normalization tensors for alignment runs."""
 
@@ -62,7 +59,7 @@ class ToolpathAlignmentPreparedData:
     z_lim: torch.Tensor
 
 
-@dataclass
+@dataclass(frozen=True)
 class ToolpathAlignmentModels:
     """The layer field, toolpath field, and platform model trained together."""
 
@@ -80,12 +77,6 @@ def prepare_data(config: CommonTrainingConfig) -> ToolpathAlignmentPreparedData:
         geometry["range_vals"],
         input_count=geometry["input_points"].shape[0],
     )
-
-    print("---")
-    print(geometry["input_points"].shape)
-    print(stress["stress_points"].shape)
-    print("---")
-
     return ToolpathAlignmentPreparedData(
         mesh=geometry["mesh"],
         mesh_volume=geometry["mesh_volume"],
@@ -126,7 +117,9 @@ def build_optimizers(config: CommonTrainingConfig, models: ToolpathAlignmentMode
     return optimizer1, optimizer2, optimizer3, scheduler1, scheduler2
 
 
-def update_toolpath_weights(epoch: int, config: CommonTrainingConfig, gradient_norm_weight: float, curvature_weight: float):
+def update_toolpath_weights(
+    epoch: int, config: CommonTrainingConfig, gradient_norm_weight: float, curvature_weight: float
+):
     """Increase toolpath loss weights using the original experiment schedule."""
     if (
         (epoch + 1) % config.toolpath_gradient_norm_weight_update_every == 0
@@ -181,7 +174,10 @@ def run_training(config: CommonTrainingConfig):
         batch_range = batch_max - batch_min
         batch_range_lim = 0.5 * batch_range
 
-        for batch_input_points, (batch_s_points, batch_s_dirs, batch_s_wts), (batch_boundary_points, batch_boundary_normals) in zipped_set:
+        for batch_input_points, (batch_s_points, batch_s_dirs, batch_s_wts), (
+            batch_boundary_points,
+            batch_boundary_normals,
+        ) in zipped_set:
             iter_count += 1
 
             # The shared layer loss trains the first scalar field. Toolpath,
@@ -317,9 +313,11 @@ def show_stress_preview(data: ToolpathAlignmentPreparedData):
 def main():
     config_path = sys.argv[1] if len(sys.argv) > 1 else "examples/configs/toolpath_alignment_config.json"
     config = load_config(config_path)
+    config.device = str(resolve_device(config.device))
+    set_global_seed(config.seed)
+    print(f"device={config.device}  seed={config.seed}")
     run_training(config)
 
 
 if __name__ == "__main__":
     main()
-

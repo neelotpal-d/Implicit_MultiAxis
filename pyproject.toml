@@ -1,0 +1,102 @@
+[project]
+name = "implicit-multiaxis"
+version = "0.1.0"
+description = "Implicit neural field-based process planning for multi-axis manufacturing"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "numpy>=1.26",
+    "pyvista>=0.43",
+    "libigl>=2.5",
+    "einops>=0.8",
+    "matplotlib>=3.7",
+    "tqdm>=4.66",
+    # torch is installed separately via the appropriate index URL for
+    # CUDA / MPS / CPU; see https://pytorch.org/get-started/locally/.
+    "torch>=2.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.15"]
+
+# Pixi configuration for users who prefer pixi over pip. The CUDA wheels of
+# torch require the pytorch-cu* channels; CPU / MPS users can use conda-forge.
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+# torch and pyvista each ship their own libomp.dylib on macOS, which abort
+# the process on dual-init. KMP_DUPLICATE_LIB_OK=TRUE is the standard
+# workaround. On linux the system libgomp is shared so this is a no-op.
+# PYTHONNOUSERSITE prevents a user-level pip install (~/.local/lib/python*)
+# from shadowing pixi-managed dependencies — saw this with python-dateutil
+# 2.6.1 from `pip install --user` shadowing the conda 2.9.0.
+[tool.pixi.activation.env]
+KMP_DUPLICATE_LIB_OK = "TRUE"
+PYTHONNOUSERSITE = "1"
+
+[tool.pixi.dependencies]
+python = ">=3.10,<3.14"
+numpy = ">=1.26"
+pyvista = ">=0.43"
+einops = ">=0.8"
+matplotlib = ">=3.7"
+python-dateutil = ">=2.7"  # matplotlib >=3.7 hard requirement
+tqdm = ">=4.66"
+pytest = ">=8.0"
+pytest-xdist = ">=3.5"
+# IBM Plex Sans is the open-source typeface IBM uses in its own research
+# publications — modern, distinct, designed for technical typography.
+# Pinning a font as a real dependency means the figures don't silently
+# degrade to DejaVu on a fresh machine — the trap that bit us in the
+# earlier figure iterations.
+font-ttf-ibm-plex-sans = ">=1.0"
+
+[tool.pixi.pypi-dependencies]
+# pixi resolves torch and libigl via pip so the user gets the right wheel
+# for CUDA / MPS / CPU and so libigl is picked up from PyPI where conda-forge
+# packaging lags behind on macos-arm64. ruff and mkdocs-* are dev tools kept
+# here so they are not pulled in by downstream pip installs of this project.
+torch = ">=2.1"
+libigl = ">=2.5"
+ruff = ">=0.15"
+mkdocs = ">=1.6"
+"mkdocs-material" = ">=9.5"
+mkdocstrings = { version = ">=0.27", extras = ["python"] }
+"mkdocs-mermaid2-plugin" = ">=1.2"
+
+[tool.pixi.tasks]
+support-free = "python examples/support_free_pipeline.py examples/configs/support_free_config.json"
+toolpath-alignment = "python examples/toolpath_alignment_pipeline.py examples/configs/toolpath_alignment_config.json"
+smoke = "pytest tests/test_smoke.py -v -n auto"
+test = "pytest tests/ -v -n auto"
+fmt = "ruff format ."
+lint = "ruff check ."
+render-diagrams = "python scripts/render_diagrams.py"
+reproduce-fertility = { cmd = "bash scripts/reproduce_paper.sh fertility" }
+reproduce-tbracket = { cmd = "bash scripts/reproduce_paper.sh tbracket" }
+reproduce-paper = { cmd = "bash scripts/reproduce_paper.sh all" }
+docs-serve = "mkdocs serve"
+_docs-figures = { cmd = "python scripts/render_diagrams.py" }
+docs-build = { depends-on = ["_docs-figures"], cmd = "mkdocs build --strict" }
+
+# Ruff configuration. Line length kept moderate; SIREN math expressions can
+# be wide. Legacy reference scripts are out of scope for linting.
+[tool.ruff]
+line-length = 120
+extend-exclude = ["examples/inputs/goodCopies", "examples/legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",  # line length checked by formatter
+    "E741",  # short names like `l` are domain-meaningful (length)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Example scripts and tests prepend the repo root to sys.path *before* the
+# repo-local imports run, so module-level imports below the path-insert are
+# expected. E402 fires on each such import; suppress the noise.
+"examples/*.py" = ["E402"]
+"tests/*.py" = ["E402"]

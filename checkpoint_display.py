@@ -1,18 +1,21 @@
 """Utilities for visualizing saved layer/toolpath checkpoints."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import numpy as np
 import pyvista as pv
 import torch
 
+from constants import DENOM_FLOOR
 from experiment_loaders import build_scalar_field
 from platform_losses import PlatformModel
 from shared_utils import load_mesh_pair, mesh_vertices_faces_bounds, normalization_tensors
 from training_dataclasses import load_config
 
 
-def latest_checkpoint(checkpoint_dir, pattern):
+def latest_checkpoint(checkpoint_dir: str | Path, pattern: str) -> str:
     """Return the newest checkpoint matching a glob pattern."""
     paths = sorted(Path(checkpoint_dir).glob(pattern))
     if not paths:
@@ -20,26 +23,32 @@ def latest_checkpoint(checkpoint_dir, pattern):
     return str(paths[-1])
 
 
-def checkpoint_exists(config, item_name):
+def checkpoint_exists(config, item_name: str) -> bool:
     """Return whether a saved checkpoint exists for one trainable item."""
     prefix = config.checkpoint_prefix or (config.model_name or "model")
     checkpoint_dir = checkpoint_dir_from_config(config)
     return any(checkpoint_dir.glob(f"{prefix}_{item_name}_epoch_*.pt"))
 
 
-def checkpoint_dir_from_config(config):
+def checkpoint_dir_from_config(config) -> Path:
     """Return the configured checkpoint folder."""
     return Path(config.checkpoint_dir or Path(config.output_dir) / "checkpoints")
 
 
-def checkpoint_path_for_epoch(config, item_name, epoch):
+def checkpoint_path_for_epoch(config, item_name: str, epoch: int) -> str:
     """Build the common checkpoint filename for one trainable item."""
     prefix = config.checkpoint_prefix or (config.model_name or "model")
     checkpoint_dir = checkpoint_dir_from_config(config)
     return str(checkpoint_dir / f"{prefix}_{item_name}_epoch_{epoch:05d}.pt")
 
 
-def resolve_checkpoint_path(config, item_name, explicit_path=None, epoch=None, fallback_path=""):
+def resolve_checkpoint_path(
+    config,
+    item_name: str,
+    explicit_path: str | None = None,
+    epoch: int | None = None,
+    fallback_path: str = "",
+) -> str:
     """Find a checkpoint by explicit path, epoch, latest saved output, then fallback."""
     if explicit_path:
         return str(explicit_path)
@@ -57,7 +66,7 @@ def resolve_checkpoint_path(config, item_name, explicit_path=None, epoch=None, f
         raise
 
 
-def load_checkpoint_state(model, checkpoint_path, device):
+def load_checkpoint_state(model: torch.nn.Module, checkpoint_path: str | Path, device: str) -> torch.nn.Module:
     """Load a saved `model_state_dict` into a model."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -65,7 +74,7 @@ def load_checkpoint_state(model, checkpoint_path, device):
     return model
 
 
-def load_display_geometry(config):
+def load_display_geometry(config) -> tuple[pv.PolyData, pv.DataSet, torch.Tensor, torch.Tensor]:
     """Load mesh geometry plus normalization tensors used by the trained field."""
     mesh, mesh_volume = load_mesh_pair(config.surface_mesh_path, config.volume_mesh_path)
     _, _, mins, maxs = mesh_vertices_faces_bounds(mesh)
@@ -73,7 +82,7 @@ def load_display_geometry(config):
     return mesh, mesh_volume, mid_vals, range_vals
 
 
-def load_layer_field(config, checkpoint_path):
+def load_layer_field(config, checkpoint_path: str | Path) -> torch.nn.Module:
     """Build and load the layer scalar field."""
     field = build_scalar_field(
         config,
@@ -85,7 +94,7 @@ def load_layer_field(config, checkpoint_path):
     return load_checkpoint_state(field, checkpoint_path, config.device)
 
 
-def load_toolpath_field(config, checkpoint_path):
+def load_toolpath_field(config, checkpoint_path: str | Path) -> torch.nn.Module:
     """Build and load the toolpath scalar field."""
     field = build_scalar_field(
         config,
@@ -97,13 +106,18 @@ def load_toolpath_field(config, checkpoint_path):
     return load_checkpoint_state(field, checkpoint_path, config.device)
 
 
-def load_platform_model(config, checkpoint_path, range_vals):
+def load_platform_model(config, checkpoint_path: str | Path, range_vals: torch.Tensor) -> PlatformModel:
     """Build and load the platform model."""
     platform = PlatformModel(device=config.device, scale=range_vals[0]).to(config.device)
     return load_checkpoint_state(platform, checkpoint_path, config.device)
 
 
-def normalize_points(points, mid_vals, range_vals, device):
+def normalize_points(
+    points: np.ndarray | torch.Tensor,
+    mid_vals: torch.Tensor,
+    range_vals: torch.Tensor,
+    device: str,
+) -> torch.Tensor:
     """Convert physical points into trained field coordinates."""
     points = torch.tensor(points, dtype=torch.float32, device=device, requires_grad=True)
     points = (points - mid_vals) / range_vals
@@ -112,14 +126,21 @@ def normalize_points(points, mid_vals, range_vals, device):
     return points
 
 
-def evaluate_field_on_points(field, points):
+def evaluate_field_on_points(field: torch.nn.Module, points: torch.Tensor) -> np.ndarray:
     """Evaluate scalar field values on a tensor of normalized points."""
     with torch.enable_grad():
         out = field(points)
     return out["scalars"].detach().to("cpu").numpy().flatten()
 
 
-def add_layer_scalars(mesh_volume, layer_field, mid_vals, range_vals, device, scalar_name="layer_scalar"):
+def add_layer_scalars(
+    mesh_volume: pv.DataSet,
+    layer_field: torch.nn.Module,
+    mid_vals: torch.Tensor,
+    range_vals: torch.Tensor,
+    device: str,
+    scalar_name: str = "layer_scalar",
+) -> tuple[pv.DataSet, np.ndarray]:
     """Attach layer-field scalar values to mesh-volume points."""
     normalized_points = normalize_points(mesh_volume.points, mid_vals, range_vals, device)
     scalars = evaluate_field_on_points(layer_field, normalized_points)
@@ -128,7 +149,9 @@ def add_layer_scalars(mesh_volume, layer_field, mid_vals, range_vals, device, sc
     return mesh_volume, scalars
 
 
-def layer_values_from_scalars(scalars, layer_count=15, padding=1e-4):
+def layer_values_from_scalars(
+    scalars: torch.Tensor | np.ndarray, layer_count: int = 15, padding: float = 1e-4
+) -> np.ndarray:
     """Create evenly spaced layer contour values inside the scalar range."""
     min_scalar = float(np.min(scalars)) + padding
     max_scalar = float(np.max(scalars)) - padding
@@ -137,12 +160,12 @@ def layer_values_from_scalars(scalars, layer_count=15, padding=1e-4):
     return np.linspace(min_scalar, max_scalar, layer_count)
 
 
-def build_layer_contours(mesh_volume, layer_values, scalar_name="layer_scalar"):
+def build_layer_contours(mesh_volume: pv.DataSet, layer_values, scalar_name: str = "layer_scalar") -> pv.PolyData:
     """Extract layer surfaces from a scalar-valued mesh volume."""
     return mesh_volume.contour(layer_values, scalars=scalar_name)
 
 
-def subdivide_layer_surface(layer):
+def subdivide_layer_surface(layer: pv.PolyData) -> pv.PolyData:
     """Apply one Loop subdivision pass to a triangular layer surface."""
     import igl
 
@@ -197,11 +220,17 @@ def add_toolpath_curves_to_plotter(
     plotter.add_mesh(curves.tube(radius=tube_radius, n_sides=20), color=color)
 
 
-def add_platform_plane_to_plotter(plotter, platform, mid_vals, range_vals, size=250):
+def add_platform_plane_to_plotter(
+    plotter: pv.Plotter,
+    platform: PlatformModel,
+    mid_vals: torch.Tensor,
+    range_vals: torch.Tensor,
+    size: float = 250,
+) -> None:
     """Draw the learned platform plane in physical coordinates."""
-    platform_pos = platform.platformBase.detach() * range_vals + mid_vals
-    platform_dir = platform.platformDir.detach()
-    platform_dir = platform_dir / (torch.norm(platform_dir, dim=1, keepdim=True) + 1e-10)
+    platform_pos = platform.platform_base.detach() * range_vals + mid_vals
+    platform_dir = platform.platform_dir.detach()
+    platform_dir = platform_dir / (torch.norm(platform_dir, dim=1, keepdim=True) + DENOM_FLOOR)
 
     center = platform_pos.squeeze(0).to("cpu").numpy()
     direction = platform_dir.squeeze(0).to("cpu").numpy()
@@ -209,7 +238,13 @@ def add_platform_plane_to_plotter(plotter, platform, mid_vals, range_vals, size=
     plotter.add_mesh(plane, color="lightgray", opacity=0.35)
 
 
-def display_support_free_checkpoint(config_path, checkpoint_path=None, epoch=None, layer_count=15, cpos="xy"):
+def display_support_free_checkpoint(
+    config_path: str | Path,
+    checkpoint_path: str | None = None,
+    epoch: int | None = None,
+    layer_count: int = 15,
+    cpos: str = "xy",
+) -> None:
     """Display layer contours for a support-free checkpoint."""
     config = load_config(config_path)
     checkpoint_path = resolve_checkpoint_path(

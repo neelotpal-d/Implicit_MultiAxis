@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying paper."
+title: "Implicit Neural Field-Based Process Planning for Multi-Axis Manufacturing"
+authors:
+  - family-names: Dutta
+    given-names: Neelotpal
+    affiliation: "Digital Manufacturing Lab, The University of Manchester"
+    email: neelotpal.dutta@manchester.ac.uk
+  - family-names: Zhang
+    given-names: Tianyu
+    affiliation: "Digital Manufacturing Lab, The University of Manchester"
+  - family-names: Liu
+    given-names: Tao
+    affiliation: "Digital Manufacturing Lab, The University of Manchester"
+  - family-names: Chen
+    given-names: Yongxue
+    affiliation: "Digital Manufacturing Lab, The University of Manchester"
+  - family-names: Wang
+    given-names: Charlie C.L.
+    affiliation: "Digital Manufacturing Lab, The University of Manchester"
+type: software
+license: MIT
+url: "https://neelotpal-d.github.io/Implicit_MultiAxis/"
+preferred-citation:
+  type: article
+  title: "Implicit Neural Field-Based Process Planning for Multi-Axis Manufacturing"
+  authors:
+    - family-names: Dutta
+      given-names: Neelotpal
+    - family-names: Zhang
+      given-names: Tianyu
+    - family-names: Liu
+      given-names: Tao
+    - family-names: Chen
+      given-names: Yongxue
+    - family-names: Wang
+      given-names: Charlie C.L.
+  journal: "Computer-Aided Design"
+  year: 2026

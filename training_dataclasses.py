@@ -1,7 +1,9 @@
 """JSON-backed config object shared by example training pipelines."""
 
-from dataclasses import dataclass
+from __future__ import annotations
+
 import json
+from dataclasses import dataclass
 
 
 @dataclass
@@ -16,6 +18,9 @@ class CommonTrainingConfig:
 
     model_name: str = ""
     device: str = "cuda"
+    # 'auto' picks cuda > mps > cpu via repro.resolve_device.
+    # The pipelines overwrite this field with the resolved device at startup.
+    seed: int = 42
 
     # Input files. Empty optional paths are allowed for workflows that do not
     # need stress data, toolpath checkpoints, platform checkpoints, or SDF data.
@@ -117,7 +122,7 @@ def loss_enabled(config, field_name):
 
 def load_config(config_path):
     """Create a CommonTrainingConfig from a JSON file."""
-    with open(config_path, "r") as file:
+    with open(config_path) as file:
         values = json.load(file)
 
     config = CommonTrainingConfig()

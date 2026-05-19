@@ -12,15 +12,26 @@
 
 ## Setup
 
-Install PyTorch separately first so it matches your machine and CUDA version. Use the official PyTorch install selector for the right command.
-
-Then install the remaining Python dependencies:
+Recommended via pixi (one-shot install, lockfile-pinned, picks up MPS on Apple Silicon and CUDA on Linux):
 
 ```bash
+pixi install
+pixi run smoke          # validates the env on the resolved device
+pixi run support-free   # runs the fertility pipeline end-to-end
+```
+
+Or via pip (install PyTorch separately so it matches your CUDA / MPS / CPU setup):
+
+```bash
+pip install torch       # M-series Macs get MPS automatically; for CUDA see https://pytorch.org/get-started/locally/
 pip install -r requirements.txt
 ```
 
+The pipeline configs default to `"device": "cuda"`. On Apple Silicon set it to `"auto"` (which picks `cuda > mps > cpu`) or to `"mps"` explicitly. `repro.resolve_device` raises a clear error if you ask for a device the host doesn't have rather than silently falling back.
+
 The structured scripts expect the local `siren_pytorch` folder to remain in this repository.
+
+See `reproduce.md` for the full reproducibility recipe (tiered by ambition: render shipped checkpoints, retrain shipped configs, reproduce other paper figures, bit-exact regeneration).
 
 ## Examples
 
@@ -125,5 +136,25 @@ python sdfField.py train examples/inputs/fertility.obj --save-path examples/chec
 Use `--max-distance-points` when the SDF grid is too large for memory.
 
 
+## Citation
+
+If you use this code, please cite the accompanying paper:
+
+> Dutta, N., Zhang, T., Liu, T., Chen, Y., & Wang, C.C.L. (2026).
+> *Implicit Neural Field-Based Process Planning for Multi-Axis Manufacturing.*
+> Computer-Aided Design (accepted).
+
+A `CITATION.cff` is provided for GitHub's auto-citation widget and for
+Zotero / Citation File Format-aware tools.
+
+Project page: <https://neelotpal-d.github.io/Implicit_MultiAxis/>
+
+## License
+
+MIT. See `LICENSE`. The vendored `siren_pytorch/` directory is a modified
+copy of [lucidrains/siren-pytorch](https://github.com/lucidrains/siren-pytorch),
+also MIT licensed; its original copyright is reproduced in `LICENSE`.
+
 ## Contact
+
 If you have any questions, drop us a mail at [neelotpal.dutta@manchester.ac.uk](mailto:neelotpal.dutta@manchester.ac.uk)
