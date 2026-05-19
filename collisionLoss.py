@@ -159,9 +159,7 @@ def sample_directions_in_cone(directions: torch.Tensor, samples: torch.Tensor) -
     v = torch.cross(directions, u, dim=-1)
 
     rotated_samples = (
-        samples[:, 0:1] * u.unsqueeze(1)
-        + samples[:, 1:2] * v.unsqueeze(1)
-        + samples[:, 2:3] * directions.unsqueeze(1)
+        samples[:, 0:1] * u.unsqueeze(1) + samples[:, 1:2] * v.unsqueeze(1) + samples[:, 2:3] * directions.unsqueeze(1)
     )
     return rotated_samples  # (n, m, 3)
 
@@ -373,9 +371,7 @@ class CollisionLoss:
             KeyError: If ``profile_name`` is not a known preset.
         """
         if profile_name not in TOOL_PROFILES:
-            raise KeyError(
-                f"Unknown tool profile {profile_name!r}; known profiles: {sorted(TOOL_PROFILES)!r}"
-            )
+            raise KeyError(f"Unknown tool profile {profile_name!r}; known profiles: {sorted(TOOL_PROFILES)!r}")
 
         profile = TOOL_PROFILES[profile_name]
         s = float(scale)
@@ -505,9 +501,7 @@ class CollisionLoss:
     ) -> dict:
         """Far envelope variant with randomised circle phase and jittered distances."""
         radi = self.radi_far if self.radi_far is not None else radi_
-        sample_points_at_base = sample_tangent_circle(
-            points, grads, n_angles, radi, randomize_phase=True
-        )
+        sample_points_at_base = sample_tangent_circle(points, grads, n_angles, radi, randomize_phase=True)
 
         if self.dist_array_far is not None:
             jitter = (

@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from constants import DENOM_FLOOR
 from training_dataclasses import loss_enabled
 
 
@@ -24,7 +25,7 @@ class PlatformModel(nn.Module):
     def selectPoints(self, surfacePoints, surfaceGrads, surfaceNormals):
         """Select boundary points whose layer gradients need platform support."""
         gradNorm = torch.norm(surfaceGrads, dim=1).unsqueeze(1)
-        surfaceGrads = surfaceGrads / (gradNorm + 1e-10)
+        surfaceGrads = surfaceGrads / (gradNorm + DENOM_FLOOR)
         dotProd = surfaceNormals * surfaceGrads
         dotProd = torch.sum(dotProd, dim=1)
 
@@ -37,12 +38,12 @@ class PlatformModel(nn.Module):
 
     def sample_circle_around_gradient(self, points, grads, k, l, r):
         """Sample clearance-check points on circles around each gradient axis."""
-        axis = grads / (grads.norm(dim=1, keepdim=True) + 1e-8)
+        axis = grads / (grads.norm(dim=1, keepdim=True) + DENOM_FLOOR)
         axial_points = points + l * axis
 
         rand_vec = torch.randn(points.shape[0], 3, device=self.device)
         rand_vec = rand_vec - (rand_vec * axis).sum(dim=1, keepdim=True) * axis
-        radial1 = rand_vec / (rand_vec.norm(dim=1, keepdim=True) + 1e-8)
+        radial1 = rand_vec / (rand_vec.norm(dim=1, keepdim=True) + DENOM_FLOOR)
         radial2 = torch.cross(axis, radial1)
 
         angles = torch.linspace(0, 2 * torch.pi, steps=k, device=self.device)
@@ -56,7 +57,7 @@ class PlatformModel(nn.Module):
         """Penalize platform direction, distance, and clearance violations."""
         self.selectPoints(surfacePoints, surfaceGrads, surfaceNormals)
 
-        platformDirNorm = torch.norm(self.platformDir) + 1e-10
+        platformDirNorm = torch.norm(self.platformDir) + DENOM_FLOOR
 
         if self.targetDirs is not None:
             dirError = self.targetDirs - (self.platformDir / platformDirNorm)

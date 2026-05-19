@@ -1,11 +1,13 @@
 import numpy as np
 import torch
 
+from constants import DENOM_FLOOR
+
 
 def supportLoss(surfaceNormals, surfaceGrads, angle_degrees=132.0, sharpness=25.0):
     """Penalize boundary gradients that violate the support-angle threshold."""
     gradNorm = torch.norm(surfaceGrads, dim=1).unsqueeze(1)
-    surfaceGrads = surfaceGrads / (gradNorm + 1e-10)
+    surfaceGrads = surfaceGrads / (gradNorm + DENOM_FLOOR)
     dotProd = surfaceNormals * surfaceGrads
     dotProd = torch.sum(dotProd, dim=1)
 
@@ -40,7 +42,7 @@ def computeGaussianCurvature(dx2, dy2, dz2, grads):
 
     Kg_num = fx * fx * h11 + fy * fy * h22 + fz * fz * h33
     Kg_num = Kg_num + 2 * h12 * fx * fy + 2 * h13 * fx * fz + 2 * h23 * fy * fz
-    Kg_den = norm_gradF * norm_gradF * norm_gradF * norm_gradF + 1e-10
+    Kg_den = norm_gradF * norm_gradF * norm_gradF * norm_gradF + DENOM_FLOOR
     return (Kg_num / Kg_den).unsqueeze(1)
 
 
@@ -62,7 +64,7 @@ def computeMeanCurvature(dx2, dy2, dz2, grads):
     Km_num = Km_num + 2 * fxy * fx * fy + 2 * fxz * fx * fz + 2 * fyz * fy * fz
     trace_h = fxx + fyy + fzz
     Km_num = Km_num - norm_gradF * norm_gradF * trace_h
-    Km_den = 2 * norm_gradF * norm_gradF * norm_gradF + 1e-10
+    Km_den = 2 * norm_gradF * norm_gradF * norm_gradF + DENOM_FLOOR
     return (Km_num / Km_den).unsqueeze(1)
 
 
@@ -101,7 +103,7 @@ def getPointInsideMask(points, x_lim=1.0, y_lim=1.0, z_lim=1.0):
 def computeGeodesicCurvature(grads1, grads2, inps):
     """Compute geodesic curvature by differentiating the tangent direction."""
     tangent = torch.cross(grads1, grads2)
-    tangent_unit = tangent / (torch.norm(tangent, dim=1, keepdim=True) + 1e-10)
+    tangent_unit = tangent / (torch.norm(tangent, dim=1, keepdim=True) + DENOM_FLOOR)
 
     dTx = torch.autograd.grad(
         tangent_unit[:, 0],
@@ -127,7 +129,7 @@ def computeGeodesicCurvature(grads1, grads2, inps):
     accn_z = torch.sum(dTz * tangent_unit, dim=1, keepdim=True)
     accn = torch.hstack((accn_x, accn_y, accn_z))
 
-    normal = grads1 / (torch.norm(grads1, dim=1, keepdim=True) + 1e-10)
+    normal = grads1 / (torch.norm(grads1, dim=1, keepdim=True) + DENOM_FLOOR)
     projected_accn = accn - torch.sum(accn * normal, dim=1, keepdim=True) * normal
     return torch.norm(projected_accn, dim=1)
 
@@ -135,7 +137,7 @@ def computeGeodesicCurvature(grads1, grads2, inps):
 def computeGeodesicCurvature2(grads1, grads2, f1H2X, f1H2Y, f1H2Z, f2H2X, f2H2Y, f2H2Z):
     """Compute geodesic curvature from two gradients and their Hessian rows."""
     vector = torch.cross(grads1, grads2)
-    vector_norm = torch.norm(vector, dim=1, keepdim=True) + 2e-10
+    vector_norm = torch.norm(vector, dim=1, keepdim=True) + DENOM_FLOOR
 
     tangent = vector / vector_norm
 
@@ -153,6 +155,6 @@ def computeGeodesicCurvature2(grads1, grads2, f1H2X, f1H2Y, f1H2Z, f2H2X, f2H2Y,
 
     accn = torch.hstack((Kx.unsqueeze(1), Ky.unsqueeze(1), Kz.unsqueeze(1)))
 
-    normal = grads1 / (torch.norm(grads1, dim=1, keepdim=True) + 1e-10)
+    normal = grads1 / (torch.norm(grads1, dim=1, keepdim=True) + DENOM_FLOOR)
     projected_accn = accn - torch.sum(accn * normal, dim=1, keepdim=True) * normal
     return torch.norm(projected_accn, dim=1)

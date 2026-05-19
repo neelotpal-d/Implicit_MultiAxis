@@ -6,6 +6,7 @@ import numpy as np
 import pyvista as pv
 import torch
 
+from constants import DENOM_FLOOR
 from experiment_loaders import build_scalar_field
 from platform_losses import PlatformModel
 from shared_utils import load_mesh_pair, mesh_vertices_faces_bounds, normalization_tensors
@@ -201,7 +202,7 @@ def add_platform_plane_to_plotter(plotter, platform, mid_vals, range_vals, size=
     """Draw the learned platform plane in physical coordinates."""
     platform_pos = platform.platformBase.detach() * range_vals + mid_vals
     platform_dir = platform.platformDir.detach()
-    platform_dir = platform_dir / (torch.norm(platform_dir, dim=1, keepdim=True) + 1e-10)
+    platform_dir = platform_dir / (torch.norm(platform_dir, dim=1, keepdim=True) + DENOM_FLOOR)
 
     center = platform_pos.squeeze(0).to("cpu").numpy()
     direction = platform_dir.squeeze(0).to("cpu").numpy()
