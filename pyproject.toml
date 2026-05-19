@@ -60,10 +60,10 @@ fmt = "ruff format ."
 lint = "ruff check ."
 
 # Ruff configuration. Line length kept moderate; SIREN math expressions can
-# be wide. We leave the legacy goodCopies folder out of linting.
+# be wide. Legacy reference scripts are out of scope for linting.
 [tool.ruff]
 line-length = 120
-extend-exclude = ["examples/inputs/goodCopies"]
+extend-exclude = ["examples/inputs/goodCopies", "examples/legacy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]

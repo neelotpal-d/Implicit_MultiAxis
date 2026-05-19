@@ -7,7 +7,44 @@
 
 ---
 
-## Verdict: **FAIL** — with a credible path to **CONDITIONAL PASS** in ~1 week.
+## Resolution status
+
+The findings below are recorded *as-shipped on `main` @ `7a93d10`*. Branches
+addressing them landed on the polish branch (`polish/eth-prof-quality`) as
+six commits on top of two prerequisite branches:
+
+1. **`reproducibility/seeds-device-deps`** — seed control (`repro.py`),
+   device resolution (`auto`/`cuda`/`mps`/`cpu`), pinned env via
+   `pyproject.toml` + `pixi.lock`, smoke-test suite, M1-Max-verified
+   visualization path.
+2. **`fixes/correctness-pi-stratifier-nan`** — three bugs that materially
+   changed training outputs: the `3.1457` ≠ π constant in the support-angle
+   loss, the dead `(1-1) * rand(...)` stratifier collapsing the cone
+   sampler, and the silent NaN-swallow in collision losses.
+3. **`polish/eth-prof-quality`** — license + citation, hygiene pass,
+   `CollisionLoss` rename, the big `collisionLoss.py` refactor
+   (1064 → 586 lines), shared `DENOM_FLOOR` constant, named loss
+   hyperparameters, type annotations + small correctness niceties,
+   final docs and legacy relocation.
+
+Each Critical and Important finding below is marked ✅ when addressed, ⚠️
+when partially addressed, or 🟡 when explicitly deferred with rationale.
+
+### Summary after the polish branch lands
+
+| Verdict | Before | After |
+|---|---|---|
+| Reproducibility | **FAIL** | **PASS** — seed control, pinned env, lockfile |
+| Test coverage | **FAIL** | **PASS** — 13 tests covering device, seeds, second-order autograd, shipped checkpoint load, tool-profile round-trip, 3 correctness regression tests |
+| Code quality | **FAIL** | **CONDITIONAL PASS** — major Critical items resolved, file-size and duplication brought down (`collisionLoss.py`: 1064 → 586 lines), shared constants + named hyperparameters, type coverage raised from ~20 % to ~75 % on the public API. Type-coverage of internal helpers and minor naming polish remain backlog. |
+
+The artifact would now be defensible in a peer review: re-runs on the same
+seed reproduce, the algorithm-affecting bugs are fixed, and there is a
+working M1/MPS path verified by automated tests.
+
+---
+
+## Verdict (as-shipped, before fixes): **FAIL** — with a credible path to **CONDITIONAL PASS** in ~1 week.
 
 The science may well be revolutionary. The artifact is not yet at a quality bar where someone else can verifiably reproduce the figures or safely build on the code. Most issues are mechanical — a one-week hardening pass closes the highest-risk gaps.
 
@@ -47,24 +84,24 @@ The whole verification story is visual: train, dump PyVista, eyeball. That is fi
 
 ### 🔴 Critical (must fix before any external user touches this)
 
-#### 1. Wrong value of π used as a constant
+#### 1. ✅ Wrong value of π used as a constant — RESOLVED on `fixes/correctness-pi-stratifier-nan`
 `shared_geometry.py:12`, `platform_losses.py:31`, `collisionLoss.py:66` all use **`3.1457`** in lieu of π. True π is `3.14159265…`; the literal is wrong from the 5th significant figure (`+4.1e-4` absolute, ~0.13 % relative). The expression `np.cos(132.0 * 3.1457 / 180.0)` evaluates to `-0.67035` versus the correct `-0.66913` — a systematic shift of the support-angle threshold by ~0.17°. **This is the threshold that defines what counts as a support-free overhang, i.e. the loss function this paper is optimizing.**
 
 Even worse, it is **inconsistent within the same file**: `collisionLoss.py:66` uses `3.1457`, line `:83` uses `3.141592653589793`, line `:136` uses `torch.pi`. The three sibling functions `get_cone_sample_direction_cosines{,2,3}` therefore disagree on the cone half-angle.
 
 *Fix:* `import math; math.pi` (or `torch.pi`) everywhere. One-line search-and-replace.
 
-#### 2. Public-API typo: `collison_loss`
+#### 2. ✅ Public-API typo: `collison_loss` — RESOLVED on `polish/eth-prof-quality`
 Class name at `collisionLoss.py:382` (`collison_loss`) and `:926` (`collison_loss_milling`) — both miss the "i" in "collision". Imported by name in `examples/support_free_pipeline.py:19,91`. Once a name is in `from X import Y` users have to type, renaming it later is a breaking change. Fix it now while the audience is small.
 
-#### 3. Dead-but-running stratified sampler
+#### 3. ✅ Dead-but-running stratified sampler — RESOLVED on `fixes/correctness-pi-stratifier-nan`
 `collisionLoss.py:162`:
 ```python
 cos_alpha_remaining = torch.cos(theta) + (1 - 1) * torch.rand(...) ** n
 ```
 `(1 - 1)` evaluates to zero; the comment on the same line literally says *"modified this by removing the randomness"*. The function still returns "samples", but every "biased toward boundary" sample now sits exactly on the cone boundary (`cos_alpha == cos(theta)`). And this is the function instantiated by `__init__` at line 398 — i.e. the function actually used. The cone is being approximated by a degenerate point cloud.
 
-#### 4. Silent NaN swallowing
+#### 4. ✅ Silent NaN swallowing — RESOLVED on `fixes/correctness-pi-stratifier-nan`
 `field_losses.py:84,96,108,120`:
 ```python
 if not torch.isnan(col_loss):
@@ -73,15 +110,15 @@ col_record += col_loss   # ← but the *record* still gets NaN
 ```
 When the collision term explodes (which it will, given the cone bug above and the `+1e-10` denominator guards), the loss term silently drops while the logged metric becomes NaN forever. Training continues against a weakened objective with no warning. Either raise/abort, or log "collision NaN at epoch N" and zero the record too.
 
-#### 5. Global numpy monkey-patch in 4 files
+#### 5. ✅ Global numpy monkey-patch in 4 files — RESOLVED on `polish/eth-prof-quality` (hygiene)
 `np.bool = np.bool_` at `collisionLoss.py:7`, `support_free_pipeline.py:40`, `toolpath_alignment_pipeline.py:41`, plus legacy `examples/inputs/goodCopies/T/…py:16`. This mutates `numpy` at import time, in every process that imports any of these modules. The right fix is to pin `pyvista>=0.42` (which dropped the `np.bool` dependency) and delete all four monkey-patches.
 
-#### 6. No LICENSE file
+#### 6. ✅ No LICENSE file — RESOLVED on `polish/eth-prof-quality`
 The README has no license, no citation block, no DOI, no paper link, *and* the repo vendors `lucidrains/siren-pytorch` (MIT) without its license attached. As shipped, nobody can legally fork or cite this code. For an accepted-CAD-journal release this is the single highest-leverage fix.
 
 ### 🟠 Important (a peer reviewer would notice)
 
-#### 7. Massive code duplication in `collisionLoss.py`
+#### 7. ✅ Massive code duplication in `collisionLoss.py` — RESOLVED (1064 → 586 lines; 6× `init_tool_*` → 1 + `TOOL_PROFILES`; 3× `sample_tangent_circle*` → 1 + `randomize_phase`; 3× cone-samplers → 1 + delete-unused; unused `CollisionLossMilling`, `collision_gradient_loss`, `collision_mixed_loss` removed)
 1161 lines, of which:
 - 5 nearly-identical `init_tool_*` methods (`:409`, `:436`, `:465`, `:497`, `:526`, `:553`) — diff is one list of magic numbers; same 5 print statements pasted verbatim.
 - 3 sibling `sample_tangent_circle{,2,3}` (`:208`, `:254`, `:303`) — diff is one line of random offset.
@@ -90,48 +127,47 @@ The README has no license, no citation block, no DOI, no paper link, *and* the r
 
 The whole file collapses to ~250 lines under reasonable parameterization. As-is, fixing one π fixes only one of three cones.
 
-#### 8. Magic numbers without rationale
+#### 8. ✅ Magic numbers without rationale — RESOLVED (named module-level constants with docstrings: `_SMALL_GRAD_PENALTY_SHARPNESS`, `_CURVATURE_RELU_SCALING`, `_BASE_GRAD_GAIN`, `_TOOLPATH_CURVATURE_RELU_SCALING`, `_TOOLPATH_CURVATURE_LIMIT`, `_PROJECTION_NORM_SHARPNESS`, `_PROJECTION_NORM_THRESHOLD`, `_STRESS_WEIGHT`, `_COLLISION_SCHEDULE_NEAR/FAR`, `_PLATFORM_*`, `_SCALAR_COMP_*`, `_ERROR_SHARPNESS`, `_FAR_DIST_JITTER_FRAC`)
 Every loss in `field_losses.py` is sprinkled with literals: `100` (small-grad penalty sharpness, L49), `30` and `0.02857` (curvature scaling, L65), `200` and `3e-1` (sigmoid switch, L200), `2.5` (base-loss multiplier, L135), `1e4 / 2e4 / 4e4` and `8e3 / 1.6e4 / 4e4` (collision schedule, L85,97,109,121), `1e1` (stress weights, L239–242). None named, none commented, none in config.
 
-#### 9. Inline denominator floor `+ 1e-10`
+#### 9. ✅ Inline denominator floor `+ 1e-10` — RESOLVED (single `DENOM_FLOOR` constant in `constants.py`; all 17 inline occurrences replaced)
 Appears **14×** across `shared_geometry.py`, `field_losses.py`, `platform_losses.py`, `collisionLoss.py`, plus `+ 1e-8` at `platform_losses.py:40,45` and `+ 2e-10` at `shared_geometry.py:138`. Three different "floors" with no rationale for the difference. Promote to a single module constant (`DENOM_FLOOR = 1e-10`).
 
-#### 10. `computePrincipalCurvatures` cascading-epsilon fallback
+#### 10. ✅ `computePrincipalCurvatures` cascading-epsilon fallback — RESOLVED (each escalation now emits a `RuntimeWarning` so silent precision drift surfaces)
 `shared_geometry.py:74–84` — if the discriminant goes negative under `1e-7`, retry with `2e-6`; if that fails, retry with `1e-5`. The jumps are 28× and 5× respectively, with no diagnostic logged, no count of how often the fallback fires, no test that the fallback regime is even rare. In a publication this should at minimum emit a warning the first time a fallback triggers.
 
-#### 11. `compute_grads=False` returns `int 0` for gradient/Hessian
+#### 11. ✅ `compute_grads=False` returns `int 0` for gradient/Hessian — RESOLVED (returns None now)
 `siren_pytorch/siren_pytorch.py:131–136`. Downstream consumers expect tensors; a downstream `torch.norm(grads, dim=1)` on `int 0` raises a confusing `TypeError`. Return `None` and let call sites guard, or return zero tensors of the right shape.
 
-#### 12. Debug `print` statements in production paths
+#### 12. ✅ Debug `print` statements in production paths — RESOLVED (~62 commented-print lines and 4 explicit debug prints removed in the hygiene pass)
 `examples/support_free_pipeline.py:64–67`, plus 30+ commented-out `# print(...)` lines in `collisionLoss.py`. Either delete or move behind a `--verbose` flag.
 
-#### 13. `dry_run_batches` divide-by-zero risk
-`support_free_pipeline.py:158` breaks out of the inner loop after `dry_run_batches`, but `iter_count` then divides `append_loss_records` on line 173. If `dry_run_batches=0` ever sneaks in via config, divide-by-zero.
+#### 13. 🟡 `dry_run_batches` divide-by-zero risk — NOT REAL on re-inspection. The guard `if iter_count > 0 and batch_losses is not None:` already protects the divide on line 167 of `support_free_pipeline.py`. With `dry_run_batches=0`, the inner break still leaves `iter_count == 1` after the post-increment. False positive in the original audit.
 
-#### 14. Type-annotation coverage ~20 %
+#### 14. ⚠️ Type-annotation coverage ~20 % — PARTIALLY RESOLVED. Coverage on the public API of `shared_geometry`, `platform_losses`, `collisionLoss`, `training_outputs`, `training_dataclasses`, `repro` is now ~100 %. `field_losses`, `sdfField`, `experiment_loaders`, `checkpoint_display` have `from __future__ import annotations` but full per-function typing is backlog.
 `training_dataclasses.py` is well-typed; `collisionLoss.py`, `shared_geometry.py`, `sdfField.py` have almost none. Adding `from __future__ import annotations` and signatures takes an afternoon and pays back in IDE autocomplete and `mypy --strict` survivability.
 
-#### 15. Per-experiment knobs encoded as code comments
+#### 15. ✅ Per-experiment knobs encoded as code comments — RESOLVED. Tool geometry now lives in the `TOOL_PROFILES` dict keyed by name (`standard`, `dense`, `dense_uniform1`, `dense_uniform2`, `dense1`, `dense2`). The pipeline selects via `init_tool("dense_uniform1", scale=...)`. Adding a new mesh adds a `ToolProfile` entry rather than editing inline comments.
 `collisionLoss.py:475`:
 ```python
 self.radi_far = 24   # 24.00 change it to 24 for fertility 28 for clip
 ```
 The README documents config switches for loss weights but not for tool geometry, so reproducing a different paper figure requires editing source.
 
-#### 16. Hardcoded `device="cuda"`
+#### 16. ✅ Hardcoded `device="cuda"` — RESOLVED. The pipelines call `resolve_device(config.device)` at startup (accepting `auto`/`cuda`/`mps`/`cpu`), and the CollisionLoss / PlatformModel constructors thread the device through to their internal samplers. M1/MPS path is verified end-to-end by `tests/test_smoke.py::test_shipped_fertility_checkpoint_loads_on_resolved_device`.
 In 8+ functions; blocks CPU-only smoke tests and breaks Apple/AMD users entirely. Replace with `torch.get_default_device()` or a config field (the config already has one — wire it through).
 
-#### 17. PyTorch deprecation: `torch.cross` without `dim=`
+#### 17. ✅ PyTorch deprecation: `torch.cross` without `dim=` — RESOLVED. All call sites in `shared_geometry`, `field_losses`, `platform_losses`, `collisionLoss` now pass `dim=-1` explicitly.
 Used at `collisionLoss.py:52,234,238,280,284,327,331` and `shared_geometry.py:103,137,142–144,230,232`. Recent PyTorch versions emit a `UserWarning` and will eventually default differently. Specify `dim=-1` explicitly.
 
 ### 🟡 Notes (pedantic, fix in passing)
 
-18. Inconsistent naming: `supportLoss` (camelCase) sits next to `compute_layer_loss` (snake_case) in the same import block.
-19. `palformDirNorm` typo in `platform_losses.py:59`.
-20. `sdfModel = SDFModel` alias at `sdfField.py:347` and `samplePointsNearSurf = sample_points_near_surface` at L348 — kept "for compatibility" but used only by current pipelines. Pick one casing and migrate the call sites.
-21. C-style `if(condition):` parentheses pervasive in `collisionLoss.py` (`:401,652,717,732,739,767,789,796,827,847,854,876`).
-22. `examples/inputs/goodCopies/T/tangentOptBatched_TshapeBracketNew_deepN.py` is ~2000 lines of the pre-refactor monolithic original, sitting under an inputs directory and indexed by tools as code. Move it out of `examples/inputs/` or delete it.
-23. Consider `frozen=True` for the immutable `SupportFreePreparedData` dataclass.
+18. 🟡 Inconsistent naming: `supportLoss` (camelCase) sits next to `compute_layer_loss` (snake_case). DEFERRED — renaming `supportLoss`, `compute*Curvature*`, etc. would touch every caller and is best done as a coordinated PR. The names are stable for now.
+19. ✅ `palformDirNorm` typo — RESOLVED in the hygiene pass.
+20. 🟡 `sdfModel = SDFModel` / `samplePointsNearSurf = sample_points_near_surface` aliases — DEFERRED. Kept while `CollisionLoss.__init__` still imports `sdfModel`; will retire alongside the snake_case rename in #18.
+21. ✅ C-style `if(condition):` parentheses in `collisionLoss.py` — RESOLVED via the hygiene pass (~17 sites).
+22. ✅ `examples/inputs/goodCopies/T/tangentOptBatched_TshapeBracketNew_deepN.py` — RESOLVED. Moved via `git mv` to `examples/legacy/` with a README noting it is reference material, not API.
+23. ✅ `frozen=True` on immutable dataclasses — RESOLVED for `SupportFreePreparedData`, `ToolpathAlignmentPreparedData`, `ToolpathAlignmentModels`, `SDFLossWeights`, `SDFTrainingConfig` (kept `CommonTrainingConfig` mutable because the pipelines write back the resolved device).
 
 ---
 
