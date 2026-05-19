@@ -36,11 +36,13 @@ when partially addressed, or 🟡 when explicitly deferred with rationale.
 |---|---|---|
 | Reproducibility | **FAIL** | **PASS** — seed control, pinned env, lockfile |
 | Test coverage | **FAIL** | **PASS** — 13 tests covering device, seeds, second-order autograd, shipped checkpoint load, tool-profile round-trip, 3 correctness regression tests |
-| Code quality | **FAIL** | **CONDITIONAL PASS** — major Critical items resolved, file-size and duplication brought down (`collisionLoss.py`: 1064 → 586 lines), shared constants + named hyperparameters, type coverage raised from ~20 % to ~75 % on the public API. Type-coverage of internal helpers and minor naming polish remain backlog. |
+| Code quality | **FAIL** | **PASS** — all Critical findings resolved; the duplication, magic numbers, naming, and type-coverage backlog items are closed. `collisionLoss.py` 1161 → 586 lines (–50 %). Snake_case public API throughout. Type hints on every public function. |
 
-The artifact would now be defensible in a peer review: re-runs on the same
-seed reproduce, the algorithm-affecting bugs are fixed, and there is a
-working M1/MPS path verified by automated tests.
+The artifact is defensible in a peer review: re-runs on the same seed
+reproduce, the three algorithm-affecting bugs are fixed, there is a
+working M1/MPS path verified by automated tests, and the codebase is
+self-consistent (PEP 8 names, named constants, typed signatures, single
+source of truth for tolerances).
 
 ---
 
@@ -144,7 +146,7 @@ Appears **14×** across `shared_geometry.py`, `field_losses.py`, `platform_losse
 
 #### 13. 🟡 `dry_run_batches` divide-by-zero risk — NOT REAL on re-inspection. The guard `if iter_count > 0 and batch_losses is not None:` already protects the divide on line 167 of `support_free_pipeline.py`. With `dry_run_batches=0`, the inner break still leaves `iter_count == 1` after the post-increment. False positive in the original audit.
 
-#### 14. ⚠️ Type-annotation coverage ~20 % — PARTIALLY RESOLVED. Coverage on the public API of `shared_geometry`, `platform_losses`, `collisionLoss`, `training_outputs`, `training_dataclasses`, `repro` is now ~100 %. `field_losses`, `sdfField`, `experiment_loaders`, `checkpoint_display` have `from __future__ import annotations` but full per-function typing is backlog.
+#### 14. ✅ Type-annotation coverage ~20 % — RESOLVED. Every public function across `shared_geometry`, `platform_losses`, `collisionLoss`, `training_outputs`, `training_dataclasses`, `repro`, `field_losses`, `sdfField`, `experiment_loaders`, and `checkpoint_display` now has a typed signature. `from __future__ import annotations` is set in every module.
 `training_dataclasses.py` is well-typed; `collisionLoss.py`, `shared_geometry.py`, `sdfField.py` have almost none. Adding `from __future__ import annotations` and signatures takes an afternoon and pays back in IDE autocomplete and `mypy --strict` survivability.
 
 #### 15. ✅ Per-experiment knobs encoded as code comments — RESOLVED. Tool geometry now lives in the `TOOL_PROFILES` dict keyed by name (`standard`, `dense`, `dense_uniform1`, `dense_uniform2`, `dense1`, `dense2`). The pipeline selects via `init_tool("dense_uniform1", scale=...)`. Adding a new mesh adds a `ToolProfile` entry rather than editing inline comments.
@@ -162,9 +164,9 @@ Used at `collisionLoss.py:52,234,238,280,284,327,331` and `shared_geometry.py:10
 
 ### 🟡 Notes (pedantic, fix in passing)
 
-18. 🟡 Inconsistent naming: `supportLoss` (camelCase) sits next to `compute_layer_loss` (snake_case). DEFERRED — renaming `supportLoss`, `compute*Curvature*`, etc. would touch every caller and is best done as a coordinated PR. The names are stable for now.
+18. ✅ Inconsistent naming: `supportLoss` (camelCase) etc. — RESOLVED. The full camelCase public API (`supportLoss`, `computeGaussianCurvature`, `computeMeanCurvature`, `computePrincipalCurvatures`, `computeGeodesicCurvature`, `computeGeodesicCurvature2`, `getPointInsideMask`, `selectPoints`, `getPlatformPosLoss`, `platformBase`, `platformDir`, `dispDist`, `selectedPoints`, `targetDirs`, `limModel`, `limFun`, `limVals`, `predictOuts`, `predictGrads`) has been renamed to snake_case with PEP 8. Internal locals (`gradNorm`, `dotProd`, etc.) also snake_cased throughout `shared_geometry` and `platform_losses`.
 19. ✅ `palformDirNorm` typo — RESOLVED in the hygiene pass.
-20. 🟡 `sdfModel = SDFModel` / `samplePointsNearSurf = sample_points_near_surface` aliases — DEFERRED. Kept while `CollisionLoss.__init__` still imports `sdfModel`; will retire alongside the snake_case rename in #18.
+20. ✅ `sdfModel = SDFModel` / `samplePointsNearSurf = sample_points_near_surface` aliases — RESOLVED. Both aliases removed; `collisionLoss.py` imports `SDFModel` directly.
 21. ✅ C-style `if(condition):` parentheses in `collisionLoss.py` — RESOLVED via the hygiene pass (~17 sites).
 22. ✅ `examples/inputs/goodCopies/T/tangentOptBatched_TshapeBracketNew_deepN.py` — RESOLVED. Moved via `git mv` to `examples/legacy/` with a README noting it is reference material, not API.
 23. ✅ `frozen=True` on immutable dataclasses — RESOLVED for `SupportFreePreparedData`, `ToolpathAlignmentPreparedData`, `ToolpathAlignmentModels`, `SDFLossWeights`, `SDFTrainingConfig` (kept `CommonTrainingConfig` mutable because the pipelines write back the resolved device).
