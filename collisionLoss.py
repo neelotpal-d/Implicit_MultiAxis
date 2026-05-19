@@ -395,11 +395,11 @@ class collison_loss:
         # current tool geometry only. If the tool shape, nozzle/cutter radius,
         # or required clearance changes, these distances and radii must be
         # changed to match the new physical envelope.
-        self.sampled_directions_seed = get_cone_sample_direction_cosines3(angle, sample_num)
+        self.sampled_directions_seed = get_cone_sample_direction_cosines3(angle, sample_num, device=device)
         self.dist_vals = torch.tensor(distList, dtype = torch.float32, device=device)
         self.sdfModel = None
         if(model_load_path):
-            self.sdfModel = sdfModel(model_load_path = model_load_path)
+            self.sdfModel = sdfModel(device=device, model_load_path=model_load_path)
         self.device = device
         self.dist_array_far = None
         self.radi_far = None

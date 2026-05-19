@@ -1,6 +1,10 @@
-numpy
-pyvista
-libigl
-einops
-matplotlib
-tqdm
+# Install torch separately to match your CUDA / MPS / CPU setup; see
+# https://pytorch.org/get-started/locally/ for the right wheel.
+# torch>=2.1  required for stable second-order autograd on MPS.
+
+numpy>=1.26
+pyvista>=0.43
+libigl>=2.5
+einops>=0.8
+matplotlib>=3.7
+tqdm>=4.66

@@ -25,6 +25,7 @@ from experiment_loaders import (
 )
 from field_losses import compute_layer_loss, compute_stress_losses, compute_toolpath_loss
 from platform_losses import PlatformModel, add_platform_loss
+from repro import resolve_device, set_global_seed
 from training_dataclasses import CommonTrainingConfig, load_config
 from training_outputs import (
     append_loss_records,
@@ -317,6 +318,9 @@ def show_stress_preview(data: ToolpathAlignmentPreparedData):
 def main():
     config_path = sys.argv[1] if len(sys.argv) > 1 else "examples/configs/toolpath_alignment_config.json"
     config = load_config(config_path)
+    config.device = str(resolve_device(config.device))
+    set_global_seed(config.seed)
+    print(f"device={config.device}  seed={config.seed}")
     run_training(config)
 
 

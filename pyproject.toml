@@ -1,0 +1,53 @@
+[project]
+name = "implicit-multiaxis"
+version = "0.1.0"
+description = "Implicit neural field-based process planning for multi-axis manufacturing"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "numpy>=1.26",
+    "pyvista>=0.43",
+    "libigl>=2.5",
+    "einops>=0.8",
+    "matplotlib>=3.7",
+    "tqdm>=4.66",
+    # torch is installed separately via the appropriate index URL for
+    # CUDA / MPS / CPU; see https://pytorch.org/get-started/locally/.
+    "torch>=2.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+# Pixi configuration for users who prefer pixi over pip. The CUDA wheels of
+# torch require the pytorch-cu* channels; CPU / MPS users can use conda-forge.
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+# torch and pyvista each ship their own libomp.dylib on macOS, which abort
+# the process on dual-init. KMP_DUPLICATE_LIB_OK=TRUE is the standard
+# workaround. On linux the system libgomp is shared so this is a no-op.
+[tool.pixi.activation.env]
+KMP_DUPLICATE_LIB_OK = "TRUE"
+
+[tool.pixi.dependencies]
+python = ">=3.10,<3.14"
+numpy = ">=1.26"
+pyvista = ">=0.43"
+einops = ">=0.8"
+matplotlib = ">=3.7"
+tqdm = ">=4.66"
+pytest = ">=8.0"
+
+[tool.pixi.pypi-dependencies]
+# pixi resolves torch and libigl via pip so the user gets the right wheel
+# for CUDA / MPS / CPU and so libigl is picked up from PyPI where conda-forge
+# packaging lags behind on macos-arm64.
+torch = ">=2.1"
+libigl = ">=2.5"
+
+[tool.pixi.tasks]
+support-free = "python examples/support_free_pipeline.py examples/configs/support_free_config.json"
+toolpath-alignment = "python examples/toolpath_alignment_pipeline.py examples/configs/toolpath_alignment_config.json"
+smoke = "pytest tests/test_smoke.py -v"

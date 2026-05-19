@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+.env
+.pixi/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Training outputs that should not be committed (already-shipped reference
+# checkpoints live under examples/outputs/* and examples/checkpoints/* and
+# are tracked explicitly; new local runs land in the same place).
+# Add specific run output globs here if you start producing volatile outputs.

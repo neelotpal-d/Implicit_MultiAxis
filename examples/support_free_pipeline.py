@@ -24,6 +24,7 @@ from field_losses import (
     add_collision_losses,
     compute_layer_loss,
 )
+from repro import resolve_device, set_global_seed
 from training_dataclasses import CommonTrainingConfig, load_config, loss_enabled
 from training_outputs import (
     append_loss_records,
@@ -91,6 +92,7 @@ def build_collision_loss(data: SupportFreePreparedData, config: CommonTrainingCo
     collision_loss = collison_loss(
         config.collision_sample_count,
         config.collision_angle_degrees,
+        device=config.device,
         model_load_path=config.sdf_checkpoint_path,
     )
     collision_loss.init_tool_dense_uniform1(scale=data.range_vals[0])
@@ -202,6 +204,11 @@ def show_boundary_preview(data: SupportFreePreparedData):
 def main():
     config_path = sys.argv[1] if len(sys.argv) > 1 else "examples/configs/support_free_config.json"
     config = load_config(config_path)
+    # Resolve 'auto'/'cuda'/'mps'/'cpu' once at startup and write it back into
+    # the config so every downstream module sees a concrete device name.
+    config.device = str(resolve_device(config.device))
+    set_global_seed(config.seed)
+    print(f"device={config.device}  seed={config.seed}")
     run_training(config)
 
 
