@@ -1,4 +1,4 @@
-# ETH Prof Quality Audit — `Implicit_MultiAxis`
+# Code Quality Audit — `Implicit_MultiAxis`
 
 **Project:** Implicit Neural Field-Based Process Planning for Multi-Axis Manufacturing
 (Dutta, Zhang, Liu, Chen, Wang — *Computer-Aided Design*, accepted May 2026)
@@ -10,7 +10,7 @@
 ## Resolution status
 
 The findings below are recorded *as-shipped on `main` @ `7a93d10`*. Branches
-addressing them landed on the polish branch (`polish/eth-prof-quality`) as
+addressing them landed on the polish branch (`polish/engineering-hardening`) as
 six commits on top of two prerequisite branches:
 
 1. **`reproducibility/seeds-device-deps`** — seed control (`repro.py`),
@@ -21,7 +21,7 @@ six commits on top of two prerequisite branches:
    changed training outputs: the `3.1457` ≠ π constant in the support-angle
    loss, the dead `(1-1) * rand(...)` stratifier collapsing the cone
    sampler, and the silent NaN-swallow in collision losses.
-3. **`polish/eth-prof-quality`** — license + citation, hygiene pass,
+3. **`polish/engineering-hardening`** — license + citation, hygiene pass,
    `CollisionLoss` rename, the big `collisionLoss.py` refactor
    (1064 → 586 lines), shared `DENOM_FLOOR` constant, named loss
    hyperparameters, type annotations + small correctness niceties,
@@ -93,7 +93,7 @@ Even worse, it is **inconsistent within the same file**: `collisionLoss.py:66` u
 
 *Fix:* `import math; math.pi` (or `torch.pi`) everywhere. One-line search-and-replace.
 
-#### 2. ✅ Public-API typo: `collison_loss` — RESOLVED on `polish/eth-prof-quality`
+#### 2. ✅ Public-API typo: `collison_loss` — RESOLVED on `polish/engineering-hardening`
 Class name at `collisionLoss.py:382` (`collison_loss`) and `:926` (`collison_loss_milling`) — both miss the "i" in "collision". Imported by name in `examples/support_free_pipeline.py:19,91`. Once a name is in `from X import Y` users have to type, renaming it later is a breaking change. Fix it now while the audience is small.
 
 #### 3. ✅ Dead-but-running stratified sampler — RESOLVED on `fixes/correctness-pi-stratifier-nan`
@@ -112,10 +112,10 @@ col_record += col_loss   # ← but the *record* still gets NaN
 ```
 When the collision term explodes (which it will, given the cone bug above and the `+1e-10` denominator guards), the loss term silently drops while the logged metric becomes NaN forever. Training continues against a weakened objective with no warning. Either raise/abort, or log "collision NaN at epoch N" and zero the record too.
 
-#### 5. ✅ Global numpy monkey-patch in 4 files — RESOLVED on `polish/eth-prof-quality` (hygiene)
+#### 5. ✅ Global numpy monkey-patch in 4 files — RESOLVED on `polish/engineering-hardening` (hygiene)
 `np.bool = np.bool_` at `collisionLoss.py:7`, `support_free_pipeline.py:40`, `toolpath_alignment_pipeline.py:41`, plus legacy `examples/inputs/goodCopies/T/…py:16`. This mutates `numpy` at import time, in every process that imports any of these modules. The right fix is to pin `pyvista>=0.42` (which dropped the `np.bool` dependency) and delete all four monkey-patches.
 
-#### 6. ✅ No LICENSE file — RESOLVED on `polish/eth-prof-quality`
+#### 6. ✅ No LICENSE file — RESOLVED on `polish/engineering-hardening`
 The README has no license, no citation block, no DOI, no paper link, *and* the repo vendors `lucidrains/siren-pytorch` (MIT) without its license attached. As shipped, nobody can legally fork or cite this code. For an accepted-CAD-journal release this is the single highest-leverage fix.
 
 ### 🟠 Important (a peer reviewer would notice)

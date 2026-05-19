@@ -41,7 +41,7 @@ build/tool direction at every step of the algorithm.
 
 - :material-magnify: **[Code review](code-review.md)**
 
-    The original ETH-prof-quality audit and its resolution status. Useful
+    The original code-quality audit and its resolution status. Useful
     if you're considering using this code as a starting point.
 
 - :material-api: **[API reference](api/index.md)**
