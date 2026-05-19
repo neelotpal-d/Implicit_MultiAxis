@@ -28,7 +28,7 @@ class PlatformModel(nn.Module):
         dotProd = surfaceNormals * surfaceGrads
         dotProd = torch.sum(dotProd, dim=1)
 
-        supportError = -dotProd + np.cos(137.00 * 3.1457 / 180.00)
+        supportError = -dotProd + np.cos(np.deg2rad(137.00))
         supportMask = torch.relu(supportError) > 0.0
 
         self.selectedPoints = surfacePoints[supportMask].detach()

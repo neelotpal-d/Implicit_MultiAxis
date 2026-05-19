@@ -72,18 +72,38 @@ def compute_layer_loss(batch_input_points, scalar_field, data, config, master_sw
     return loss, record, out, grads
 
 
+def _accumulate_collision_term(loss, record, term, weight, name: str, epoch: int):
+    """Add a collision sub-term to loss and record, warning if non-finite.
+
+    The original code silently dropped NaN/Inf terms from ``loss`` while
+    still adding them to ``record``, which polluted the log files with
+    monotonically NaN values and made it impossible to spot which
+    collision constraint had blown up. Here we zero both contributions
+    on non-finite values *and* emit a single-line warning so the user
+    knows their collision constraint is being skipped.
+    """
+    if not torch.isfinite(term):
+        print(
+            f"[warning] {name} collision loss non-finite at epoch {epoch}; "
+            f"this batch's contribution is skipped.",
+            flush=True,
+        )
+        return loss, record
+    return loss + weight * term, record + term
+
+
 def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, collision_loss, data, config, epoch: int):
     """Add near, far, and inside collision penalties for the current tool model."""
     if not loss_enabled(config, "use_collision_loss"):
         return loss, 0
 
-    col_record = 0
+    col_record = torch.zeros((), dtype=torch.float32)
     lim_vals = [data.x_lim, data.y_lim, data.z_lim]
 
     col_loss = collision_loss.collision_scalar_loss(batch_input_points, grads, out["scalars"], scalar_field, limVals=lim_vals)["loss"]
-    if not torch.isnan(col_loss):
-        loss += collision_weight(epoch, 1e4, 2e4, 4e4) * col_loss
-    col_record += col_loss
+    loss, col_record = _accumulate_collision_term(
+        loss, col_record, col_loss, collision_weight(epoch, 1e4, 2e4, 4e4), "near", epoch,
+    )
 
     far_loss = collision_loss.collision_scalar_loss_far(
         batch_input_points,
@@ -93,9 +113,9 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
         limVals=lim_vals,
         n_angles=10,
     )["loss"]
-    if not torch.isnan(far_loss):
-        loss += collision_weight(epoch, 8e3, 1.6e4, 4e4) * far_loss
-    col_record += far_loss
+    loss, col_record = _accumulate_collision_term(
+        loss, col_record, far_loss, collision_weight(epoch, 8e3, 1.6e4, 4e4), "far", epoch,
+    )
 
     far_loss2 = collision_loss.collision_scalar_loss_far2(
         batch_input_points,
@@ -105,9 +125,9 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
         limVals=lim_vals,
         n_angles=10,
     )["loss"]
-    if not torch.isnan(far_loss2):
-        loss += collision_weight(epoch, 8e3, 1.6e4, 4e4) * far_loss2
-    col_record += far_loss2
+    loss, col_record = _accumulate_collision_term(
+        loss, col_record, far_loss2, collision_weight(epoch, 8e3, 1.6e4, 4e4), "far2", epoch,
+    )
 
     if epoch > 0:
         inner_loss = collision_loss.collision_scalar_loss_far_in(
@@ -117,9 +137,9 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
             scalar_field,
             limVals=lim_vals,
         )["loss"]
-        if not torch.isnan(inner_loss):
-            loss += collision_weight(epoch, 8e3, 1.6e4, 4e4) * inner_loss
-        col_record += inner_loss
+        loss, col_record = _accumulate_collision_term(
+            loss, col_record, inner_loss, collision_weight(epoch, 8e3, 1.6e4, 4e4), "inner", epoch,
+        )
 
     return loss, col_record
 
