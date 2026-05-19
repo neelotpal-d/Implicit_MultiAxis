@@ -17,6 +17,9 @@ venv/
 .vscode/
 .idea/
 
+# mkdocs build output
+/site/
+
 # Training outputs that should not be committed (already-shipped reference
 # checkpoints live under examples/outputs/* and examples/checkpoints/* and
 # are tracked explicitly; new local runs land in the same place).

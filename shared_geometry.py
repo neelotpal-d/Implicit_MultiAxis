@@ -120,7 +120,9 @@ def compute_principal_curvatures(
     the geometry is at the edge of numerical stability.
 
     Args:
-        dx2, dy2, dz2: Hessian rows.
+        dx2: Hessian row ``∂²f/∂x∂_``.
+        dy2: Hessian row ``∂²f/∂y∂_``.
+        dz2: Hessian row ``∂²f/∂z∂_``.
         grads: ``(n, 3)`` field gradients.
         epsilons: Three monotonically-increasing fallback floors. Default
             covers a 28x widening between levels.

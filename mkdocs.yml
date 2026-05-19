@@ -1,0 +1,112 @@
+site_name: Implicit Multi-Axis
+site_description: >-
+  Implicit Neural Field-Based Process Planning for Multi-Axis Manufacturing —
+  algorithm explainer and code reference.
+site_url: https://neelotpal-d.github.io/Implicit_MultiAxis/
+repo_url: https://github.com/neelotpal-d/Implicit_MultiAxis
+repo_name: neelotpal-d/Implicit_MultiAxis
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: switch to dark
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: switch to light
+  icon:
+    repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - md_in_html
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mermaid2
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_toc_entry: false
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Algorithm:
+      - algorithm/index.md
+      - Implicit fields: algorithm/fields.md
+      - Layer loss: algorithm/layer-loss.md
+      - Collision loss: algorithm/collision-loss.md
+      - Toolpath loss: algorithm/toolpath-loss.md
+      - Platform loss: algorithm/platform-loss.md
+  - Reproduce: reproduce.md
+  - Code review: code-review.md
+  - API reference:
+      - api/index.md
+      - shared_geometry: api/shared_geometry.md
+      - field_losses: api/field_losses.md
+      - collisionLoss: api/collisionLoss.md
+      - platform_losses: api/platform_losses.md
+      - sdfField: api/sdfField.md
+      - experiment_loaders: api/experiment_loaders.md
+      - training_dataclasses: api/training_dataclasses.md
+      - repro: api/repro.md
+      - constants: api/constants.md

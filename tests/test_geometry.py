@@ -90,9 +90,7 @@ def test_sphere_mean_curvature_is_minus_inverse_radius():
         hz2 = torch.tensor([[0.0, 0.0, 2.0]], dtype=torch.float32)
 
         km = compute_mean_curvature(hx2, hy2, hz2, grads).squeeze().item()
-        assert math.isclose(km, -1.0 / r, abs_tol=ATOL), (
-            f"sphere R={r}: H_mean expected {-1.0 / r:.6f}, got {km:.6f}"
-        )
+        assert math.isclose(km, -1.0 / r, abs_tol=ATOL), f"sphere R={r}: H_mean expected {-1.0 / r:.6f}, got {km:.6f}"
 
 
 def test_sphere_principal_curvatures_are_equal():
@@ -140,9 +138,7 @@ def test_cylinder_mean_curvature_is_minus_half_inverse_radius():
 
         km = compute_mean_curvature(hx2, hy2, hz2, grads).squeeze().item()
         expected = -1.0 / (2 * r)
-        assert math.isclose(km, expected, abs_tol=ATOL), (
-            f"cylinder R={r}: H_mean expected {expected:.6f}, got {km:.6f}"
-        )
+        assert math.isclose(km, expected, abs_tol=ATOL), f"cylinder R={r}: H_mean expected {expected:.6f}, got {km:.6f}"
 
 
 def test_cylinder_principal_curvatures_are_zero_and_minus_inverse_radius():
@@ -157,12 +153,8 @@ def test_cylinder_principal_curvatures_are_zero_and_minus_inverse_radius():
     k1k2 = compute_principal_curvatures(hx2, hy2, hz2, grads).squeeze().tolist()
     k_sorted = sorted(k1k2)  # Ascending so we know which is which.
     # Expected (-1/R, 0) = (-1, 0) on the unit cylinder.
-    assert math.isclose(k_sorted[0], -1.0 / r, abs_tol=1e-3), (
-        f"cylinder K_min expected {-1.0 / r}, got {k_sorted[0]}"
-    )
-    assert math.isclose(k_sorted[1], 0.0, abs_tol=1e-3), (
-        f"cylinder K_max expected 0, got {k_sorted[1]}"
-    )
+    assert math.isclose(k_sorted[0], -1.0 / r, abs_tol=1e-3), f"cylinder K_min expected {-1.0 / r}, got {k_sorted[0]}"
+    assert math.isclose(k_sorted[1], 0.0, abs_tol=1e-3), f"cylinder K_max expected 0, got {k_sorted[1]}"
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +193,7 @@ def test_torus_outer_equator_matches_known_curvatures():
     kg = compute_gaussian_curvature(hx2, hy2, hz2, grads).squeeze().item()
     expected_kg = 1.0 / (r_minor * (R + r_minor))
     assert math.isclose(kg, expected_kg, abs_tol=1e-4), (
-        f"torus outer equator (R={R}, r={r_minor}): "
-        f"K_gauss expected {expected_kg:.6f}, got {kg:.6f}"
+        f"torus outer equator (R={R}, r={r_minor}): K_gauss expected {expected_kg:.6f}, got {kg:.6f}"
     )
 
     # The principal curvatures at the outer equator are
@@ -241,9 +232,7 @@ def test_curvature_is_scale_invariant_to_position():
     for point in points_on_unit_sphere:
         grads, hx2, hy2, hz2 = _sphere_jet(point)
         kg = compute_gaussian_curvature(hx2, hy2, hz2, grads).squeeze().item()
-        assert math.isclose(kg, expected_k, abs_tol=ATOL), (
-            f"sphere at {point}: K_gauss expected {expected_k}, got {kg}"
-        )
+        assert math.isclose(kg, expected_k, abs_tol=ATOL), f"sphere at {point}: K_gauss expected {expected_k}, got {kg}"
 
 
 def test_curvature_handles_small_mesh_scale():
@@ -260,6 +249,5 @@ def test_curvature_handles_small_mesh_scale():
     expected_kg = 1.0 / (r * r)  # 10_000
     relative_error = abs(kg - expected_kg) / expected_kg
     assert relative_error < 1e-3, (
-        f"small-scale sphere R={r}: K_gauss relative error {relative_error:.4e} "
-        f"(got {kg}, expected {expected_kg})"
+        f"small-scale sphere R={r}: K_gauss relative error {relative_error:.4e} (got {kg}, expected {expected_kg})"
     )

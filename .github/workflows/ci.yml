@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, polish/**, fixes/**, reproducibility/**]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.66.0
+          cache: true
+
+      - name: Lint
+        run: pixi run lint
+
+      - name: Format check
+        run: pixi run ruff format --check .
+
+      - name: Test
+        run: pixi run test
+
+      # macos-14 is osx-arm64; the smoke test verifies the shipped
+      # checkpoint loads on MPS end-to-end.
+      - name: Smoke (Tier 0 — shipped checkpoint load)
+        run: pixi run smoke

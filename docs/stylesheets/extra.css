@@ -1,0 +1,15 @@
+/* Tighter figure spacing in the algorithm explainer */
+.md-typeset figure {
+    margin: 1.5em auto;
+}
+
+/* Mermaid blocks should breathe a little */
+.md-typeset .mermaid {
+    margin: 1.5em 0;
+    text-align: center;
+}
+
+/* Make the formula-heavy pages a touch wider */
+.md-typeset {
+    font-feature-settings: "kern", "liga", "calt", "ss01";
+}
