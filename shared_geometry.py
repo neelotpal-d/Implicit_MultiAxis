@@ -9,7 +9,7 @@ def supportLoss(surfaceNormals, surfaceGrads, angle_degrees=132.0, sharpness=25.
     dotProd = surfaceNormals * surfaceGrads
     dotProd = torch.sum(dotProd, dim=1)
 
-    supportError = -dotProd + np.cos(angle_degrees * 3.1457 / 180.00)
+    supportError = -dotProd + np.cos(np.deg2rad(angle_degrees))
     supportMask = torch.relu(supportError) > 0.0
     supportError = torch.relu(sharpness * supportError)
     supportMask = supportError > 0.0

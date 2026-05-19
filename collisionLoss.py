@@ -63,7 +63,7 @@ def sample_directions_in_cone(directions, samples):
 
 def get_cone_sample_direction_cosines(angle, m, device='cuda'):
     """Randomly sample directions in a canonical cone aligned with +Z."""
-    theta = torch.tensor(angle*3.1457/180)  # Opening angle in radians
+    theta = torch.tensor(angle * torch.pi / 180)  # Opening angle in radians
 
     # Precompute samples in the canonical frame
     cos_alpha = torch.rand(m) * (1 - torch.cos(theta)) + torch.cos(theta)
@@ -80,7 +80,7 @@ def get_cone_sample_direction_cosines(angle, m, device='cuda'):
 
 def get_cone_sample_direction_cosines2(angle, m, device='cuda'):
     """Sample a canonical cone with extra coverage near the cone boundary."""
-    theta = torch.tensor(angle * 3.141592653589793 / 180)  # Opening angle in radians
+    theta = torch.tensor(angle * torch.pi / 180)  # Opening angle in radians
     
     # First sample: exactly along the axis
     samples = [torch.tensor([[0.0, 0.0, 1.0]], device=device)]
@@ -157,9 +157,12 @@ def get_cone_sample_direction_cosines3(angle, m, device='cuda'):
     # Stratify phi by spreading them evenly instead of random sampling
     phi_remaining = torch.linspace(0, 2 * torch.pi, num_remaining, device=device)
 
-    # Biasing towards theta using cos^n sampling
+    # Biasing towards theta using cos^n sampling. The original code wrote
+    # `(1 - 1) * torch.rand(...)` which collapsed every sample in this group
+    # to exactly cos(theta), making the cone a 2- or 3-latitude rosette.
+    # Matching the randomized branch in get_cone_sample_direction_cosines2.
     n = 5  # Adjust this exponent to control concentration
-    cos_alpha_remaining = torch.cos(theta) + (1 - 1) * torch.rand(num_remaining, device=device) ** n  #modified this by removing the randomness
+    cos_alpha_remaining = torch.cos(theta) + (1 - torch.cos(theta)) * torch.rand(num_remaining, device=device) ** n
     sin_alpha_remaining = torch.sqrt(1 - cos_alpha_remaining**2)
 
     x_remaining = sin_alpha_remaining * torch.cos(phi_remaining)
