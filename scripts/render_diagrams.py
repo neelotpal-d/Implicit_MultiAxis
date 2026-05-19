@@ -1,13 +1,19 @@
-"""Render the algorithm diagrams in Nature-publication style.
+"""Render algorithm diagrams matched to the paper's aesthetic.
 
-Typography:    Helvetica body, STIX (math) for formulas via mathtext.
-Color:         Tableau-derived saturated palette; viridis for sequential.
-Line weight:   1.8pt main / 0.8pt axes, marker size 8pt.
+The Dutta et al. 2026 paper uses a recognisable visual style: muted
+teal / dusty rose / warm gold palette, real VTK-rendered 3D meshes,
+clean sans-serif labels, no decorative noise. This script reproduces
+that aesthetic by:
 
-Eight figures into ``docs/figures/`` — block diagrams live inline as
-Mermaid in the markdown.
+- using **PyVista** (the project's existing dep) for 3D illustrations —
+  matplotlib's 3D backend cannot match VTK-rendered surfaces;
+- using **matplotlib** for the 2D data plots, with a Helvetica /
+  paper-muted-palette restyling;
+- composing PyVista screenshots into matplotlib subplots when the
+  figure has multiple panels (curvature regimes).
 
-Run via ``pixi run render-diagrams``.
+Output goes into ``docs/figures/`` as PNG. Run via
+``pixi run render-diagrams``.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from pathlib import Path
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import LightSource
+import pyvista as pv
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -27,21 +33,37 @@ if str(ROOT) not in sys.path:
 OUT_DIR = ROOT / "docs" / "figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+pv.OFF_SCREEN = True
+
 
 # ---------------------------------------------------------------------------
-# Nature-style matplotlib defaults
+# Paper-matched palette (sampled from the Dutta et al. teaser figure)
 # ---------------------------------------------------------------------------
 
-INK = "#1a1a1a"
-RED = "#d62728"          # Tableau red
-BLUE = "#1f77b4"         # Tableau blue
-GREEN = "#2ca02c"
-ORANGE = "#ff7f0e"
-PURPLE = "#9467bd"
-TEAL = "#17becf"
-GOLD = "#bcbd22"
-GRID = "#e8e8e8"
-MUTED = "#6b6b6b"
+INK = "#2a2a2a"          # body text + axes
+TEAL = "#5a8d8a"         # primary accent (the paper's signature teal)
+ROSE = "#c0908e"         # secondary accent (the dusty-pink)
+GOLD = "#c4a574"         # tertiary (warm tan)
+BLUE_MUTED = "#7a9bb8"   # subtle blue
+PANEL = "#a8a8a8"        # panel border gray
+MESH = "#dadada"         # neutral mesh material
+GRID = "#ececec"
+MUTED = "#7a7a7a"
+
+# Field colormap that matches the paper's red->orange->yellow->teal->dark-red
+# gradient. We synthesise this from named matplotlib stops so we don't depend
+# on a custom colormap file.
+PAPER_FIELD_CMAP = mpl.colors.LinearSegmentedColormap.from_list(
+    "paper_field",
+    [
+        (0.0, "#9c1b1b"),   # deep red — high
+        (0.25, "#d97a5a"),  # warm orange
+        (0.5, "#e7c468"),   # yellow-gold
+        (0.7, "#7ab0a8"),   # teal
+        (1.0, "#3d6d6a"),   # deep teal — low
+    ],
+)
+
 
 mpl.rcParams.update({
     "figure.dpi": 130,
@@ -49,8 +71,6 @@ mpl.rcParams.update({
     "savefig.bbox": "tight",
     "savefig.pad_inches": 0.12,
     "savefig.facecolor": "white",
-    # Helvetica body — the literal Nature/Science/IEEE typeface — with
-    # STIX math via mathtext for inline LaTeX-style symbols.
     "font.family": "sans-serif",
     "font.sans-serif": ["Helvetica", "Helvetica Neue", "Arial", "DejaVu Sans"],
     "font.size": 11,
@@ -62,24 +82,21 @@ mpl.rcParams.update({
     "xtick.labelsize": 10,
     "ytick.labelsize": 10,
     "legend.fontsize": 10,
-    # Visual style.
     "axes.edgecolor": INK,
     "axes.labelcolor": INK,
     "xtick.color": INK,
     "ytick.color": INK,
-    "axes.linewidth": 0.8,
+    "axes.linewidth": 0.7,
     "axes.spines.top": False,
     "axes.spines.right": False,
     "axes.grid": False,
     "xtick.major.size": 4.0,
     "ytick.major.size": 4.0,
-    "xtick.major.width": 0.8,
-    "ytick.major.width": 0.8,
+    "xtick.major.width": 0.7,
+    "ytick.major.width": 0.7,
     "lines.linewidth": 1.8,
     "lines.markersize": 8.0,
     "lines.markeredgewidth": 0.0,
-    "patch.linewidth": 0.8,
-    "patch.edgecolor": INK,
     "legend.frameon": False,
     "legend.handlelength": 1.6,
     "legend.handletextpad": 0.6,
@@ -95,151 +112,207 @@ def _save(fig, name: str) -> None:
     print(f"wrote {out.relative_to(ROOT)}")
 
 
-def _style_3d(ax) -> None:
-    """Strip the default 3D pane background; keep the gridlines faint."""
-    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
-        pane.fill = False
-        pane.set_edgecolor("white")
-    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-        axis._axinfo["grid"]["color"] = GRID
-        axis._axinfo["grid"]["linewidth"] = 0.5
-        axis._axinfo["grid"]["linestyle"] = "-"
+def _pv_plotter(size: tuple[int, int] = (900, 900)) -> pv.Plotter:
+    """A paper-styled PyVista plotter — white background, soft lighting."""
+    p = pv.Plotter(off_screen=True, window_size=size, lighting="three lights")
+    p.set_background("white")
+    return p
+
+
+def _add_panel_frame(ax) -> None:
+    """Draw the paper's rounded-rectangle panel border around an axes."""
+    from matplotlib.patches import FancyBboxPatch
+
+    # In axes-fraction coordinates, slightly inside the bounds.
+    rect = FancyBboxPatch(
+        (0.005, 0.005), 0.99, 0.99,
+        boxstyle="round,pad=0.0,rounding_size=0.015",
+        transform=ax.transAxes,
+        linewidth=0.8,
+        edgecolor=PANEL,
+        facecolor="none",
+        clip_on=False,
+        zorder=0,
+    )
+    ax.add_patch(rect)
 
 
 # ---------------------------------------------------------------------------
-# 1. Cone direction sampler
+# 1. Cone direction sampler  (PyVista)
 # ---------------------------------------------------------------------------
 
 
 def render_cone_sampler() -> None:
-    fig = plt.figure(figsize=(6.0, 6.0))
-    ax = fig.add_subplot(projection="3d")
-    _style_3d(ax)
+    p = _pv_plotter(size=(900, 900))
 
     angle_deg = 60.0
     theta = np.radians(angle_deg)
+    height = 1.0
 
-    # Shaded cone surface — provides a real depth cue.
-    h = np.linspace(0.02, 1.0, 32)
-    phi = np.linspace(0, 2 * np.pi, 80)
-    H, P = np.meshgrid(h, phi)
-    Xs = H * np.tan(theta) * np.cos(P)
-    Ys = H * np.tan(theta) * np.sin(P)
-    Zs = H
-    ax.plot_surface(Xs, Ys, Zs, color=BLUE, alpha=0.10, edgecolor="none",
-                    rstride=1, cstride=1, antialiased=True)
-    # Outline meridians and rim.
-    rim_phi = np.linspace(0, 2 * np.pi, 200)
-    ax.plot(np.tan(theta) * np.cos(rim_phi), np.tan(theta) * np.sin(rim_phi),
-            np.ones_like(rim_phi), color=BLUE, linewidth=1.2)
+    # Soft semi-transparent cone — paper-style "geometry-as-context".
+    # PyVista's Cone has its apex at `center + (height/2) * direction`. We
+    # want apex at the origin (0,0,0) opening upward toward the rim at z=1,
+    # so direction = (0, 0, -1) with center = (0, 0, height/2).
+    cone = pv.Cone(center=(0, 0, height / 2), direction=(0, 0, -1),
+                   height=height, radius=height * np.tan(theta), resolution=80)
+    p.add_mesh(cone, color=TEAL, opacity=0.22, smooth_shading=True,
+               show_edges=False)
+    # Outline circle at the rim.
+    rim_pts = []
+    for phi in np.linspace(0, 2 * np.pi, 240):
+        rim_pts.append([height * np.tan(theta) * np.cos(phi),
+                        height * np.tan(theta) * np.sin(phi), height])
+    rim = pv.lines_from_points(np.array(rim_pts), close=True)
+    p.add_mesh(rim, color=TEAL, line_width=2.5)
+    # Three meridians.
     for phi_m in (0, 2 * np.pi / 3, 4 * np.pi / 3):
-        ax.plot([0, np.tan(theta) * np.cos(phi_m)],
-                [0, np.tan(theta) * np.sin(phi_m)],
-                [0, 1], color=BLUE, linewidth=0.8, alpha=0.7)
+        meridian = pv.Line(
+            (0, 0, 0),
+            (np.tan(theta) * np.cos(phi_m), np.tan(theta) * np.sin(phi_m), height),
+        )
+        p.add_mesh(meridian, color=TEAL, line_width=1.6, opacity=0.7)
 
-    # Group 1: axis sample.
-    ax.scatter([0], [0], [1.0], color=INK, s=90, label="axis (1)", zorder=10,
-               depthshade=False, edgecolors=INK)
+    # Axis sample.
+    axis_pt = pv.Sphere(radius=0.04, center=(0, 0, 1.0))
+    p.add_mesh(axis_pt, color=INK, smooth_shading=True)
 
-    # Group 2: half-angle ring (m/4 samples).
+    # Half-angle ring.
     m = 24
     n_ring = m // 4
-    phi_ring = np.linspace(0, 2 * np.pi, n_ring, endpoint=False)
     cos_a = np.cos(theta / 2)
     sin_a = np.sin(theta / 2)
-    ax.scatter(sin_a * np.cos(phi_ring), sin_a * np.sin(phi_ring),
-               np.full_like(phi_ring, cos_a), color=ORANGE, s=64, zorder=8,
-               depthshade=False, label=fr"$\alpha = \theta/2$ ring  ($m/4={n_ring}$)")
+    for k in range(n_ring):
+        phi = 2 * np.pi * k / n_ring
+        s = pv.Sphere(radius=0.035, center=(sin_a * np.cos(phi),
+                                            sin_a * np.sin(phi), cos_a))
+        p.add_mesh(s, color=GOLD, smooth_shading=True)
 
-    # Group 3: boundary-biased tail (cos^n).
+    # Boundary-biased tail.
     rng = np.random.default_rng(0)
     n_tail = m - n_ring - 1
-    phi_tail = np.linspace(0, 2 * np.pi, n_tail, endpoint=False)
-    cos_tail = np.cos(theta) + (1 - np.cos(theta)) * rng.uniform(size=n_tail) ** 5
-    sin_tail = np.sqrt(1 - cos_tail**2)
-    ax.scatter(sin_tail * np.cos(phi_tail), sin_tail * np.sin(phi_tail), cos_tail,
-               color=RED, s=54, zorder=7, depthshade=False,
-               label=fr"boundary-biased ($\cos^5$, $n_{{tail}}={n_tail}$)")
+    for k in range(n_tail):
+        phi = 2 * np.pi * k / n_tail
+        cos_alpha = np.cos(theta) + (1 - np.cos(theta)) * rng.uniform() ** 5
+        sin_alpha = np.sqrt(1 - cos_alpha**2)
+        s = pv.Sphere(radius=0.032, center=(sin_alpha * np.cos(phi),
+                                            sin_alpha * np.sin(phi), cos_alpha))
+        p.add_mesh(s, color=ROSE, smooth_shading=True)
 
-    # Cone axis arrow.
-    ax.quiver(0, 0, 0, 0, 0, 1.1, color=INK, linewidth=2.0,
-              arrow_length_ratio=0.08)
-    ax.text(0.08, 0.08, 1.22, r"$\nabla f$", fontsize=15)
+    # Cone-axis arrow — tip ABOVE the rim so it reads as "build direction".
+    arrow = pv.Arrow(start=(0, 0, 0), direction=(0, 0, 1), scale=1.35,
+                     tip_length=0.20, tip_radius=0.04, shaft_radius=0.012,
+                     tip_resolution=40, shaft_resolution=40)
+    p.add_mesh(arrow, color=INK, smooth_shading=True)
 
-    ax.set_xlim([-1, 1]); ax.set_ylim([-1, 1]); ax.set_zlim([0, 1.32])
-    ax.set_xlabel("$x$"); ax.set_ylabel("$y$"); ax.set_zlabel("$z$")
-    ax.set_box_aspect((1, 1, 1))
-    ax.legend(loc="upper left", bbox_to_anchor=(-0.05, 1.0))
-    ax.view_init(elev=20, azim=-58)
+    # Camera with 20% margin around the geometry — fits on the page.
+    p.camera_position = [(3.8, -3.8, 2.4), (0, 0, 0.6), (0, 0, 1)]
+    p.camera.zoom(0.82)
+    snap = OUT_DIR / "_cone_raw.png"
+    p.screenshot(str(snap), transparent_background=False)
+    p.close()
+
+    # Compose with matplotlib so we get Helvetica labels + legend + frame.
+    fig, ax = plt.subplots(figsize=(5.8, 5.8))
+    img = plt.imread(snap)
+    ax.imshow(img)
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+
+    # Legend (made of legend handles, not real lines).
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=INK,  markersize=10, label="axis  (1)"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=GOLD, markersize=10, label=fr"$\alpha = \theta/2$ ring  ({n_ring})"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=ROSE, markersize=10, label=fr"boundary-biased  ({n_tail})"),
+    ]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(-0.02, 1.0))
+    ax.text(0.95, 0.05, r"$\nabla f$", fontsize=15, color=INK,
+            transform=ax.transAxes, ha="right")
+    _add_panel_frame(ax)
     _save(fig, "cone_sampler.png")
+    snap.unlink()
 
 
 # ---------------------------------------------------------------------------
-# 2. Tangent-plane circle sampler
+# 2. Tangent-plane circle sampler  (PyVista)
 # ---------------------------------------------------------------------------
 
 
 def render_tangent_circle() -> None:
-    fig = plt.figure(figsize=(6.0, 5.0))
-    ax = fig.add_subplot(projection="3d")
-    _style_3d(ax)
+    p = _pv_plotter(size=(900, 750))
 
     origin = np.array([0.0, 0.0, 0.0])
-    normal = np.array([0.22, 0.30, 1.0])
-    normal /= np.linalg.norm(normal)
+    normal = np.array([0.22, 0.30, 1.0]); normal /= np.linalg.norm(normal)
 
     arbitrary = np.array([1.0, 0.0, 0.0])
     u = np.cross(arbitrary, normal); u /= np.linalg.norm(u)
     v = np.cross(normal, u)
 
-    # Tangent plane indicated by a soft filled ellipse + outline.
-    plane_t = np.linspace(0, 2 * np.pi, 200)
-    plane_r = 0.70
-    plane_outline = (plane_r * np.cos(plane_t)[:, None] * u
-                     + plane_r * np.sin(plane_t)[:, None] * v)
-    # Build a tri-surface of the plane for shading.
-    plane_grid_r = np.linspace(0, plane_r, 8)
-    pg_R, pg_T = np.meshgrid(plane_grid_r, plane_t)
-    pg_pts = (pg_R * np.cos(pg_T))[..., None] * u + (pg_R * np.sin(pg_T))[..., None] * v
-    ax.plot_surface(pg_pts[..., 0], pg_pts[..., 1], pg_pts[..., 2],
-                    color=BLUE, alpha=0.10, edgecolor="none", antialiased=True)
-    ax.plot(plane_outline[:, 0], plane_outline[:, 1], plane_outline[:, 2],
-            color=BLUE, linewidth=1.4)
+    # Tangent disk.
+    disk = pv.Disc(center=origin, normal=normal, inner=0.0, outer=0.70,
+                   r_res=2, c_res=120)
+    p.add_mesh(disk, color=TEAL, opacity=0.18, smooth_shading=True,
+               show_edges=False)
+    # Disk outline.
+    out_pts = []
+    for phi in np.linspace(0, 2 * np.pi, 240):
+        out_pts.append(origin + 0.70 * np.cos(phi) * u + 0.70 * np.sin(phi) * v)
+    p.add_mesh(pv.lines_from_points(np.array(out_pts), close=True),
+               color=TEAL, line_width=2.5)
 
     # Circle samples.
     m = 12
     radius = 0.48
     angles = np.linspace(0, 2 * np.pi, m, endpoint=False)
-    pts = (radius * np.cos(angles)[:, None] * u
-           + radius * np.sin(angles)[:, None] * v).T
-    ax.plot(np.append(pts[0], pts[0, 0]), np.append(pts[1], pts[1, 0]),
-            np.append(pts[2], pts[2, 0]), color=RED, linewidth=1.2, alpha=0.7)
-    ax.scatter(pts[0], pts[1], pts[2], color=RED, s=70, zorder=10,
-               depthshade=False, label=fr"$m={m}$ circle samples")
+    ring_pts = []
+    for phi in angles:
+        pt = origin + radius * np.cos(phi) * u + radius * np.sin(phi) * v
+        ring_pts.append(pt)
+        s = pv.Sphere(radius=0.04, center=pt)
+        p.add_mesh(s, color=ROSE, smooth_shading=True)
+    p.add_mesh(pv.lines_from_points(np.array(ring_pts), close=True),
+               color=ROSE, line_width=1.5, opacity=0.6)
 
-    # Layer normal arrow.
-    ax.quiver(*origin, *normal * 0.9, color=INK, linewidth=2.2,
-              arrow_length_ratio=0.10)
-    ax.text(*(origin + normal * 1.05), r"$\hat n_1$", fontsize=15)
+    # Normal arrow.
+    arrow = pv.Arrow(start=origin, direction=normal, scale=0.95,
+                     tip_length=0.14, tip_radius=0.045, shaft_radius=0.014)
+    p.add_mesh(arrow, color=INK, smooth_shading=True)
+
     # Origin marker.
-    ax.scatter(*origin, color=INK, s=80, zorder=12, depthshade=False)
-    ax.text(0.08, 0.08, -0.08, "base point", fontsize=10, color=MUTED)
+    p.add_mesh(pv.Sphere(radius=0.045, center=origin), color=INK,
+               smooth_shading=True)
 
-    ax.set_xlim([-0.75, 0.75]); ax.set_ylim([-0.75, 0.75]); ax.set_zlim([-0.3, 1.05])
-    ax.set_xlabel("$x$"); ax.set_ylabel("$y$"); ax.set_zlabel("$z$")
-    ax.set_box_aspect((1, 1, 1))
-    ax.legend(loc="upper left", bbox_to_anchor=(-0.05, 1.0))
-    ax.view_init(elev=14, azim=-62)
+    p.camera_position = [(2.0, -2.2, 1.5), (0, 0, 0.3), (0, 0, 1)]
+    p.camera.zoom(1.0)
+    snap = OUT_DIR / "_circle_raw.png"
+    p.screenshot(str(snap), transparent_background=False)
+    p.close()
+
+    fig, ax = plt.subplots(figsize=(5.8, 4.8))
+    ax.imshow(plt.imread(snap))
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=ROSE, markersize=10, label=fr"$m={m}$ tangent samples"),
+        Line2D([0], [0], color=TEAL, lw=2.5, label="tangent plane"),
+    ]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(-0.02, 1.0))
+    ax.text(0.62, 0.78, r"$\hat n_1$", fontsize=15, color=INK,
+            transform=ax.transAxes)
+    _add_panel_frame(ax)
     _save(fig, "tangent_circle.png")
+    snap.unlink()
 
 
 # ---------------------------------------------------------------------------
-# 3. Tool envelope cross-section
+# 3. Tool envelope (2D matplotlib)
 # ---------------------------------------------------------------------------
 
 
 def render_tool_envelope() -> None:
-    """Cross-section through the gradient axis of the dense_uniform1 profile."""
     from collisionLoss import TOOL_PROFILES
 
     profile = TOOL_PROFILES["dense_uniform1"]
@@ -248,47 +321,41 @@ def render_tool_envelope() -> None:
     cone_angle = np.radians(30.0)
     z_cone = np.linspace(0, max(profile.dist_vals), 50)
     r_cone = z_cone * np.tan(cone_angle)
-    ax.fill_betweenx(z_cone, -r_cone, r_cone, color=RED, alpha=0.15,
-                     edgecolor="none")
+    ax.fill_betweenx(z_cone, -r_cone, r_cone, color=ROSE, alpha=0.22, edgecolor="none")
     ax.scatter(np.zeros(len(profile.dist_vals)), profile.dist_vals,
-               color=RED, s=46, zorder=5, edgecolor=INK, linewidth=0.6)
+               color=ROSE, s=46, zorder=5, edgecolor=INK, linewidth=0.5)
 
     ax.fill_betweenx(profile.dist_array_in,
                      -profile.radi_in, profile.radi_in,
-                     color=ORANGE, alpha=0.16, edgecolor="none")
+                     color=GOLD, alpha=0.22, edgecolor="none")
     for d in profile.dist_array_in:
         ax.scatter([-profile.radi_in, profile.radi_in], [d, d],
-                   color=ORANGE, s=32, zorder=5,
-                   edgecolor=INK, linewidth=0.6)
+                   color=GOLD, s=32, zorder=5, edgecolor=INK, linewidth=0.5)
 
     ax.fill_betweenx(profile.dist_array_far,
                      -profile.radi_far, profile.radi_far,
-                     color=BLUE, alpha=0.13, edgecolor="none")
+                     color=TEAL, alpha=0.22, edgecolor="none")
     for d in profile.dist_array_far:
         ax.scatter([-profile.radi_far, profile.radi_far], [d, d],
-                   color=BLUE, s=32, zorder=4,
-                   edgecolor=INK, linewidth=0.6)
+                   color=TEAL, s=32, zorder=4, edgecolor=INK, linewidth=0.5)
 
-    # Build-direction arrow.
     ax.annotate("", xy=(0, 7), xytext=(0, 0),
                 arrowprops={"arrowstyle": "-|>", "color": INK, "lw": 2.0,
                             "mutation_scale": 18})
-    ax.text(1.6, 4.0, r"$\nabla f$", fontsize=15)
-    # Base point.
-    ax.scatter([0], [0], color=INK, s=85, zorder=11)
-    ax.text(-2.5, -2.5, "base point", fontsize=10, color=MUTED, ha="left")
+    ax.text(1.6, 4.0, r"$\nabla f$", fontsize=15, color=INK)
+    ax.scatter([0], [0], color=INK, s=80, zorder=11)
+    ax.text(-2.5, -2.5, "base point", fontsize=10, color=MUTED)
 
-    # Labels (positioned right of each band).
     label_x = profile.radi_far + 2
     ax.text(label_x, profile.dist_array_far[len(profile.dist_array_far) // 2],
             "far cylinder\n" + fr"$r = {profile.radi_far:.0f}$ mm",
-            color=BLUE, fontsize=10, va="center")
+            color=TEAL, fontsize=10, va="center")
     ax.text(label_x, profile.dist_array_in[len(profile.dist_array_in) // 2],
             "inner cylinder\n" + fr"$r = {profile.radi_in:.2f}$ mm",
-            color=ORANGE, fontsize=10, va="center")
+            color=GOLD, fontsize=10, va="center")
     ax.text(label_x, profile.dist_vals[len(profile.dist_vals) // 2],
             "near cone\n" + r"half-angle $30^\circ$",
-            color=RED, fontsize=10, va="center")
+            color=ROSE, fontsize=10, va="center")
 
     ax.set_xlim([-profile.radi_far - 4, profile.radi_far + 18])
     ax.set_ylim([-6, max(profile.dist_array_far) + 8])
@@ -299,7 +366,7 @@ def render_tool_envelope() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Support-angle hinge loss
+# 4. Support-angle hinge loss (2D)
 # ---------------------------------------------------------------------------
 
 
@@ -314,8 +381,8 @@ def render_support_angle() -> None:
     hinge = np.maximum(0.0, sharpness * (-np.cos(np.radians(angles_deg)) + cos_thr))
     loss = hinge**2
 
-    ax.fill_between(angles_deg, 0, loss, color=RED, alpha=0.15)
-    ax.plot(angles_deg, loss, color=RED, linewidth=2.0)
+    ax.fill_between(angles_deg, 0, loss, color=ROSE, alpha=0.22)
+    ax.plot(angles_deg, loss, color=ROSE, linewidth=2.0)
     ax.axvline(threshold_deg, color=INK, linestyle="--", linewidth=1.0)
     ax.text(threshold_deg + 2, max(loss) * 0.55,
             fr"$\theta_s = {threshold_deg:.0f}^\circ$",
@@ -329,7 +396,7 @@ def render_support_angle() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Layer field — 2D level sets
+# 5. Layer field — 2D level sets (paper colormap)
 # ---------------------------------------------------------------------------
 
 
@@ -340,15 +407,12 @@ def render_layer_field() -> None:
     xv, yv = np.meshgrid(grid, grid)
     field = yv + 0.45 * np.exp(-3 * xv**2) * np.cos(1.6 * yv)
 
-    # Shaded background.
     im = ax.imshow(field, origin="lower", extent=(-1.5, 1.5, -1.5, 1.5),
-                   cmap="viridis", aspect="equal", alpha=0.85)
-    # Level sets on top.
+                   cmap=PAPER_FIELD_CMAP, aspect="equal", alpha=0.95)
     cs = ax.contour(xv, yv, field, levels=15, colors="white",
-                    linewidths=1.0, alpha=0.85)
-    ax.clabel(cs, inline=True, fontsize=8, fmt="%.2f")
+                    linewidths=0.8, alpha=0.6)
+    ax.clabel(cs, inline=True, fontsize=8, fmt="%.2f", colors="white")
 
-    # Gradient field arrows.
     sg = np.linspace(-1.3, 1.3, 9)
     xs, ys = np.meshgrid(sg, sg)
     fx = -2.7 * xs * np.exp(-3 * xs**2) * np.cos(1.6 * ys)
@@ -367,50 +431,100 @@ def render_layer_field() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. Curvature regimes
+# 6. Curvature regimes — 4 PyVista renders composed via matplotlib
 # ---------------------------------------------------------------------------
 
 
 def render_curvature_regimes() -> None:
-    """Four canonical regimes with shaded surfaces."""
-    fig = plt.figure(figsize=(12, 3.6))
-    titles = [
-        (r"planar"   + "\n" + r"$K_1 = K_2 = 0$",       lambda u, v: np.zeros_like(u),                                          "Greys"),
-        (r"sphere"   + "\n" + r"$K_1 = K_2 < 0$",       lambda u, v: 0.4 - np.sqrt(np.maximum(0.4**2 - u**2 - v**2, 0)),         "viridis"),
-        (r"cylinder" + "\n" + r"$K_1 = 0,\ K_2 \neq 0$", lambda u, v: 0.4 - np.sqrt(np.maximum(0.4**2 - u**2, 0)),                "plasma"),
-        (r"saddle"   + "\n" + r"$K_1 \cdot K_2 < 0$",   lambda u, v: 0.6 * (u**2 - v**2),                                        "coolwarm"),
-    ]
-    labels = ("a", "b", "c", "d")
+    """Four canonical regimes, rendered in PyVista and composed in matplotlib."""
 
-    u = np.linspace(-0.35, 0.35, 80)
-    v = np.linspace(-0.35, 0.35, 80)
+    # Camera shared by all four panels so the series reads consistently.
+    # 20% margin baked in via the zoom.
+    cam = [(1.05, -1.4, 0.85), (0, 0, 0.05), (0, 0, 1)]
+
+    def render_one(mesh, *, cmap_name: str | None, color: str | None,
+                   tag: str, zoom: float = 1.5) -> Path:
+        p = _pv_plotter(size=(500, 500))
+        if cmap_name is not None:
+            p.add_mesh(mesh, cmap=cmap_name, smooth_shading=True,
+                       show_edges=False, show_scalar_bar=False,
+                       ambient=0.22, diffuse=0.82, specular=0.18,
+                       specular_power=12)
+        else:
+            p.add_mesh(mesh, color=color, smooth_shading=True,
+                       show_edges=False,
+                       ambient=0.22, diffuse=0.82, specular=0.18,
+                       specular_power=12)
+        p.camera_position = cam
+        p.camera.zoom(zoom * 0.85)
+        snap = OUT_DIR / f"_{tag}_raw.png"
+        p.screenshot(str(snap), transparent_background=False)
+        p.close()
+        return snap
+
+    # --- planar: just a flat disk with a single muted color.
+    planar = pv.Disc(center=(0, 0, 0), inner=0.0, outer=0.32,
+                     normal=(0, 0, 1), r_res=2, c_res=120)
+    snap_planar = render_one(planar, cmap_name=None, color=MESH, tag="planar")
+
+    # --- sphere: real sphere, upper cap, coloured by z.
+    sphere = pv.Sphere(radius=0.32, theta_resolution=80, phi_resolution=80,
+                       start_phi=0, end_phi=110)
+    sphere = sphere.translate((0, 0, -0.1), inplace=False)
+    sphere.point_data["height"] = sphere.points[:, 2]
+    snap_sphere = render_one(sphere, cmap_name="viridis", color=None, tag="sphere")
+
+    # --- cylinder: axis along x, upper half kept so the camera sees the
+    #               curved surface from above with curvature in y/z plane.
+    cyl = pv.Cylinder(center=(0, 0, 0), direction=(1, 0, 0),
+                      radius=0.30, height=0.7, resolution=160, capping=False)
+    # Clip away the lower hemisphere; we want z >= 0.
+    cyl_top = cyl.clip(normal=(0, 0, 1), origin=(0, 0, 0), invert=False)
+    cyl_top.point_data["height"] = cyl_top.points[:, 2]
+    snap_cylinder = render_one(cyl_top, cmap_name="plasma", color=None,
+                                tag="cylinder")
+
+    # --- saddle: parametric quadratic — the grid form is fine here.
+    u = np.linspace(-0.4, 0.4, 80); v = np.linspace(-0.4, 0.4, 80)
     U, V = np.meshgrid(u, v)
-    light = LightSource(azdeg=315, altdeg=45)
+    Z = 0.7 * (U**2 - V**2)
+    saddle = pv.StructuredGrid(U, V, Z)
+    saddle.point_data["height"] = Z.ravel()
+    snap_saddle = render_one(saddle, cmap_name="coolwarm", color=None,
+                             tag="saddle")
 
-    for idx, (title, fn, cmap) in enumerate(titles):
-        ax = fig.add_subplot(1, 4, idx + 1, projection="3d")
-        _style_3d(ax)
-        Z = fn(U, V)
-        # Shaded colouring with a directional light — gives the surfaces
-        # real "form", not flat colormap blobs.
-        rgb = light.shade(Z, cmap=plt.get_cmap(cmap), vert_exag=2.0,
-                          blend_mode="soft")
-        ax.plot_surface(U, V, Z, rstride=1, cstride=1, facecolors=rgb,
-                        linewidth=0, antialiased=False, shade=False)
-        ax.set_title(title, fontsize=11, pad=2)
-        ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
-        ax.set_xlim([-0.35, 0.35]); ax.set_ylim([-0.35, 0.35]); ax.set_zlim([-0.2, 0.2])
-        ax.view_init(elev=24, azim=-58)
-        ax.text2D(0.02, 0.92, f"({labels[idx]})", transform=ax.transAxes,
-                  fontsize=12, fontweight="bold", color=INK)
-        ax.set_box_aspect((1, 1, 1))
+    snaps = [
+        ("planar",   snap_planar),
+        ("sphere",   snap_sphere),
+        ("cylinder", snap_cylinder),
+        ("saddle",   snap_saddle),
+    ]
 
+    fig, axes = plt.subplots(1, 4, figsize=(12, 3.6))
+    titles = {
+        "planar":   (r"planar",   r"$K_1 = K_2 = 0$"),
+        "sphere":   (r"sphere",   r"$K_1 = K_2 < 0$"),
+        "cylinder": (r"cylinder", r"$K_1 = 0,\ K_2 \neq 0$"),
+        "saddle":   (r"saddle",   r"$K_1 \cdot K_2 < 0$"),
+    }
+    labels = ("a", "b", "c", "d")
+    for ax, (name, snap), label in zip(axes, snaps, labels):
+        ax.imshow(plt.imread(snap))
+        ax.set_xticks([]); ax.set_yticks([])
+        for s in ax.spines.values():
+            s.set_visible(False)
+        title, sub = titles[name]
+        ax.set_title(f"{title}\n{sub}", fontsize=11)
+        ax.text(0.04, 0.92, f"({label})", transform=ax.transAxes,
+                fontsize=12, fontweight="bold", color=INK)
+        _add_panel_frame(ax)
+        snap.unlink()
     fig.tight_layout()
     _save(fig, "curvature_regimes.png")
 
 
 # ---------------------------------------------------------------------------
-# 7. Collision-loss weight schedule
+# 7. Collision-loss weight schedule (2D)
 # ---------------------------------------------------------------------------
 
 
@@ -421,15 +535,12 @@ def render_collision_schedule() -> None:
     near = np.where(epochs > 300, 4e4, np.where(epochs > 200, 2e4, 1e4))
     far = np.where(epochs > 300, 4e4, np.where(epochs > 200, 1.6e4, 8e3))
 
-    ax.step(epochs, near, where="post", color=RED, linewidth=2.2,
-            label="near cone")
-    ax.step(epochs, far, where="post", color=BLUE, linewidth=2.2,
-            label="far / inner")
-    ax.axvline(200, color=MUTED, linestyle="--", linewidth=0.8)
-    ax.axvline(300, color=MUTED, linestyle="--", linewidth=0.8)
-    ax.text(100, 4.7e4, "early", ha="center", color=MUTED)
-    ax.text(250, 4.7e4, "mid",   ha="center", color=MUTED)
-    ax.text(400, 4.7e4, "late",  ha="center", color=MUTED)
+    ax.step(epochs, near, where="post", color=ROSE, linewidth=2.4, label="near cone")
+    ax.step(epochs, far,  where="post", color=TEAL, linewidth=2.4, label="far / inner")
+    ax.axvline(200, color=MUTED, linestyle="--", linewidth=0.7)
+    ax.axvline(300, color=MUTED, linestyle="--", linewidth=0.7)
+    for x, text in [(100, "early"), (250, "mid"), (400, "late")]:
+        ax.text(x, 4.7e4, text, ha="center", color=MUTED)
 
     ax.set_xlabel("training epoch")
     ax.set_ylabel("loss weight")
@@ -440,55 +551,71 @@ def render_collision_schedule() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. Geodesic curvature illustration
+# 8. Geodesic curvature (PyVista surface + path)
 # ---------------------------------------------------------------------------
 
 
 def render_geodesic_curvature() -> None:
-    fig = plt.figure(figsize=(6.4, 5.0))
-    ax = fig.add_subplot(projection="3d")
-    _style_3d(ax)
+    p = _pv_plotter(size=(900, 720))
 
-    # Layer patch — shaded for depth.
-    u = np.linspace(-1, 1, 80); v = np.linspace(-1, 1, 80)
+    # Layer patch (parametric).
+    u = np.linspace(-1, 1, 60); v = np.linspace(-1, 1, 60)
     U, V = np.meshgrid(u, v)
     Z = 0.15 * (U**2 + V**2)
-    light = LightSource(azdeg=315, altdeg=45)
-    rgb = light.shade(Z, cmap=plt.get_cmap("viridis"), vert_exag=1.5,
-                      blend_mode="soft")
-    ax.plot_surface(U, V, Z, rstride=2, cstride=2, facecolors=rgb,
-                    linewidth=0, antialiased=False, shade=False, alpha=0.85)
+    surface = pv.StructuredGrid(U, V, Z)
+    surface.point_data["scalar"] = Z.ravel()
+    p.add_mesh(surface, cmap=PAPER_FIELD_CMAP, smooth_shading=True,
+               opacity=0.95, show_edges=False, show_scalar_bar=False,
+               ambient=0.2, diffuse=0.85, specular=0.15)
 
     # Toolpath on the surface.
     t = np.linspace(-0.7, 0.7, 200)
     xt, yt = t, 0.6 * t + 0.25 * t**2
-    zt = 0.15 * (xt**2 + yt**2)
-    ax.plot(xt, yt, zt + 0.005, color=RED, linewidth=2.5)
+    zt = 0.15 * (xt**2 + yt**2) + 0.01
+    path_pts = np.column_stack([xt, yt, zt])
+    p.add_mesh(pv.lines_from_points(path_pts), color=INK, line_width=4.0)
 
-    # Tangent / geodesic-normal / layer-normal at a point.
+    # Reference frame at the marked point.
     idx = 130
-    p = np.array([xt[idx], yt[idx], zt[idx] + 0.005])
+    pt = np.array([xt[idx], yt[idx], zt[idx]])
     tang = np.array([xt[idx + 1] - xt[idx - 1],
                      yt[idx + 1] - yt[idx - 1],
                      zt[idx + 1] - zt[idx - 1]])
     tang /= np.linalg.norm(tang)
-    n = np.array([0.3 * p[0], 0.3 * p[1], -1.0]); n /= np.linalg.norm(n)
-    gn = np.cross(tang, n); gn /= np.linalg.norm(gn)
+    n_layer = np.array([0.3 * pt[0], 0.3 * pt[1], -1.0]); n_layer /= np.linalg.norm(n_layer)
+    n_geo = np.cross(tang, n_layer); n_geo /= np.linalg.norm(n_geo)
 
-    ax.quiver(*p, *tang * 0.42, color=INK,    linewidth=2.0, arrow_length_ratio=0.18)
-    ax.quiver(*p, *gn   * 0.42, color=ORANGE, linewidth=2.0, arrow_length_ratio=0.18)
-    ax.quiver(*p, *n    * 0.42, color="white", linewidth=2.0, arrow_length_ratio=0.18)
-    ax.scatter(*p, color=INK, s=55, depthshade=False, zorder=10)
+    # Bigger arrows so the local frame reads at thumbnail size.
+    for direction, colour in [(tang, INK), (n_geo, GOLD), (-n_layer, ROSE)]:
+        p.add_mesh(pv.Arrow(start=pt, direction=direction, scale=0.55,
+                            tip_length=0.22, tip_radius=0.07,
+                            shaft_radius=0.022,
+                            tip_resolution=40, shaft_resolution=40),
+                   color=colour, smooth_shading=True)
+    p.add_mesh(pv.Sphere(radius=0.045, center=pt), color=INK,
+               smooth_shading=True)
 
-    ax.text(*(p + tang * 0.52), r"$\hat T$",   fontsize=14, color=INK)
-    ax.text(*(p + gn   * 0.52), r"$\hat n_g$", fontsize=14, color=ORANGE)
-    ax.text(*(p + n    * 0.52), r"$\hat n_1$", fontsize=14, color="white")
+    p.camera_position = [(2.9, -3.4, 1.8), (0, 0, 0.15), (0, 0, 1)]
+    p.camera.zoom(0.9)
+    snap = OUT_DIR / "_geo_raw.png"
+    p.screenshot(str(snap), transparent_background=False)
+    p.close()
 
-    ax.set_xlim([-1, 1]); ax.set_ylim([-1, 1]); ax.set_zlim([0, 0.55])
-    ax.set_xlabel("$x$"); ax.set_ylabel("$y$"); ax.set_zlabel("$z$")
-    ax.set_box_aspect((2, 2, 1.1))
-    ax.view_init(elev=22, azim=-58)
+    fig, ax = plt.subplots(figsize=(6.4, 5.0))
+    ax.imshow(plt.imread(snap))
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0], [0], color=INK,  lw=3, label=r"toolpath / $\hat T$"),
+        Line2D([0], [0], color=GOLD, lw=3, label=r"geodesic normal  $\hat n_g$"),
+        Line2D([0], [0], color=ROSE, lw=3, label=r"layer normal  $\hat n_1$"),
+    ]
+    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(-0.02, 1.0))
+    _add_panel_frame(ax)
     _save(fig, "geodesic_curvature.png")
+    snap.unlink()
 
 
 if __name__ == "__main__":
