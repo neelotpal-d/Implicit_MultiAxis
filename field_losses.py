@@ -1,5 +1,7 @@
 """Reusable loss terms for the example training pipelines."""
 
+from __future__ import annotations
+
 import torch
 
 from constants import DENOM_FLOOR
@@ -334,9 +336,9 @@ def compute_stress_losses(
     grads2 = out2["grads"][:, 0:3]
 
     field1_grads = field1_grads / (torch.norm(field1_grads, dim=1, keepdim=True) + DENOM_FLOOR)
-    tangents = torch.cross(field1_grads, grads2)
+    tangents = torch.cross(field1_grads, grads2, dim=-1)
 
-    cross_error = torch.cross(tangents, batch_s_dirs)
+    cross_error = torch.cross(tangents, batch_s_dirs, dim=-1)
     cross_error = torch.sum(cross_error * cross_error, dim=1)
     stress_loss2 = torch.mean(batch_s_wts.squeeze() * cross_error)
 

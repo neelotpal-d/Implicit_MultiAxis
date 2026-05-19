@@ -1,5 +1,7 @@
 """SIREN-based signed-distance-field model utilities."""
 
+from __future__ import annotations
+
 import argparse
 from dataclasses import dataclass, field
 from itertools import cycle

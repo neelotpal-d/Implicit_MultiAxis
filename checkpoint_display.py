@@ -1,5 +1,7 @@
 """Utilities for visualizing saved layer/toolpath checkpoints."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import numpy as np

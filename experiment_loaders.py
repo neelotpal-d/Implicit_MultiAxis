@@ -1,5 +1,7 @@
 """Data, loader, and model builders shared by the example pipelines."""
 
+from __future__ import annotations
+
 from itertools import cycle
 
 import numpy as np

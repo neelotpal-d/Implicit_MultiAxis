@@ -138,13 +138,15 @@ class SirenNet(nn.Module):
             gradsx2 = torch.autograd.grad(dx, inp, torch.ones_like(dx), create_graph=True)[0]
             gradsy2 = torch.autograd.grad(dy, inp, torch.ones_like(dy), create_graph=True)[0]
             gradsz2 = torch.autograd.grad(dz, inp, torch.ones_like(dz), create_graph=True)[0]
-
         else:
-            grads = 0
-
-            gradsx2 = 0
-            gradsy2 = 0
-            gradsz2 = 0
+            # The original code returned ``int 0`` here, which crashed
+            # downstream consumers calling ``torch.norm(grads, dim=1)`` with a
+            # confusing TypeError. Return None so call-sites have to
+            # explicitly handle the "no-gradient" path.
+            grads = None
+            gradsx2 = None
+            gradsy2 = None
+            gradsz2 = None
 
         return {"scalars": out, "grads": grads, "HX2": gradsx2, "HY2": gradsy2, "HZ2": gradsz2}
 

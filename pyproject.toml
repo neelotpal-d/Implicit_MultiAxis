@@ -40,6 +40,7 @@ einops = ">=0.8"
 matplotlib = ">=3.7"
 tqdm = ">=4.66"
 pytest = ">=8.0"
+pytest-xdist = ">=3.5"
 
 [tool.pixi.pypi-dependencies]
 # pixi resolves torch and libigl via pip so the user gets the right wheel
@@ -53,8 +54,8 @@ ruff = ">=0.15"
 [tool.pixi.tasks]
 support-free = "python examples/support_free_pipeline.py examples/configs/support_free_config.json"
 toolpath-alignment = "python examples/toolpath_alignment_pipeline.py examples/configs/toolpath_alignment_config.json"
-smoke = "pytest tests/test_smoke.py -v"
-test = "pytest tests/ -v"
+smoke = "pytest tests/test_smoke.py -v -n auto"
+test = "pytest tests/ -v -n auto"
 fmt = "ruff format ."
 lint = "ruff check ."
 
