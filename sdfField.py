@@ -39,17 +39,17 @@ class SDFTrainingConfig:
     weights: SDFLossWeights = field(default_factory=SDFLossWeights)
 
 
-def build_sdf_network(device="cuda"):
+def build_sdf_network(device: str = "cuda") -> SirenNet:
     """Create the SIREN network used for SDF prediction."""
     return SirenNet(3, 256, 1, 5, w0=30, w0_initial=30).to(device)
 
 
-def save_sdf_checkpoint(model, save_path):
+def save_sdf_checkpoint(model: torch.nn.Module, save_path: str | Path) -> None:
     """Save only the model state dict used by the collision utilities."""
     torch.save({"model_state_dict": model.state_dict()}, save_path)
 
 
-def load_sdf_checkpoint(model, checkpoint_path, device="cuda"):
+def load_sdf_checkpoint(model: torch.nn.Module, checkpoint_path: str | Path, device: str = "cuda") -> torch.nn.Module:
     """Load an SDF checkpoint into an existing model."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -57,40 +57,50 @@ def load_sdf_checkpoint(model, checkpoint_path, device="cuda"):
     return model
 
 
-def make_inside_outside_targets(sdf_values, device="cuda"):
-    """
-    Build sign targets for optional classification experiments.
+def make_inside_outside_targets(sdf_values: torch.Tensor, device: str = "cuda") -> torch.Tensor:
+    """Build ±1 sign targets for optional classification experiments.
 
-    Currently this is not used by the training loop because the classification
-    loss was disabled in the original workflow.
+    Currently unused; the classification loss was disabled in the original
+    workflow but the helper is kept for follow-on experiments.
     """
     targets = torch.ones_like(sdf_values.unsqueeze(1), device=device)
     targets[sdf_values > 0] = -1
     return targets
 
 
-def ensure_requires_grad(points):
+def ensure_requires_grad(points: torch.Tensor) -> torch.Tensor:
     """Return a detached tensor with gradients enabled."""
     points = points.detach()
     points.requires_grad = True
     return points
 
 
-def make_sdf_loaders(points_dist, scalars_dist, points_surf, normals_surf, batch_size):
+def make_sdf_loaders(
+    points_dist: torch.Tensor,
+    scalars_dist: torch.Tensor,
+    points_surf: torch.Tensor,
+    normals_surf: torch.Tensor,
+    batch_size: int,
+) -> tuple[DataLoader, DataLoader | cycle]:
     """Create paired data loaders for distance samples and surface samples."""
     dist_dataset = TensorDataset(points_dist, scalars_dist)
     surf_dataset = TensorDataset(points_surf, normals_surf)
 
     dist_loader = DataLoader(dist_dataset, batch_size=batch_size, shuffle=True)
-    surf_loader = DataLoader(surf_dataset, batch_size=batch_size, shuffle=True)
+    surf_loader: DataLoader | cycle = DataLoader(surf_dataset, batch_size=batch_size, shuffle=True)
 
-    if len(surf_loader) < len(dist_loader):
+    if isinstance(surf_loader, DataLoader) and len(surf_loader) < len(dist_loader):
         surf_loader = cycle(surf_loader)
 
     return dist_loader, surf_loader
 
 
-def compute_distance_losses(model, points, target_scalars, weights):
+def compute_distance_losses(
+    model: torch.nn.Module,
+    points: torch.Tensor,
+    target_scalars: torch.Tensor,
+    weights: SDFLossWeights,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute scalar and eikonal losses away from the surface."""
     out = model(points)
     scalar_error = torch.abs(out["scalars"] - target_scalars.unsqueeze(1))
@@ -103,7 +113,12 @@ def compute_distance_losses(model, points, target_scalars, weights):
     return total, {"distance_scalar": scalar_loss, "eikonal": eikonal_loss}
 
 
-def compute_surface_losses(model, points, target_normals, weights):
+def compute_surface_losses(
+    model: torch.nn.Module,
+    points: torch.Tensor,
+    target_normals: torch.Tensor,
+    weights: SDFLossWeights,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute zero-level and normal-alignment losses on surface points."""
     out = model(points)
     normal_error = out["grads"] - target_normals
@@ -115,13 +130,13 @@ def compute_surface_losses(model, points, target_normals, weights):
 
 
 def train_sdf_model(
-    model,
-    points_dist,
-    scalars_dist,
-    points_surf,
-    normals_surf,
-    config=None,
-):
+    model: torch.nn.Module,
+    points_dist: torch.Tensor,
+    scalars_dist: torch.Tensor,
+    points_surf: torch.Tensor,
+    normals_surf: torch.Tensor,
+    config: SDFTrainingConfig | None = None,
+) -> torch.nn.Module:
     """Fit an SDF model from distance samples and surface normals."""
     config = config or SDFTrainingConfig()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
@@ -186,7 +201,7 @@ def train_sdf_model(
     return model
 
 
-def predict_scalars(model, points, batch_size=100):
+def predict_scalars(model: torch.nn.Module, points: torch.Tensor, batch_size: int = 100) -> dict[str, torch.Tensor]:
     """Predict SDF scalar values in batches."""
     outputs = []
     for start in range(0, points.shape[0], batch_size):
@@ -195,12 +210,12 @@ def predict_scalars(model, points, batch_size=100):
     return {"scalars": torch.cat(outputs, dim=0)}
 
 
-def predict_grads(model, points):
+def predict_grads(model: torch.nn.Module, points: torch.Tensor) -> dict[str, torch.Tensor]:
     """Predict SDF gradients."""
     return {"grads": model(points)["grads"]}
 
 
-def mesh_bounds(mesh):
+def mesh_bounds(mesh: pv.PolyData) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return mesh vertices, triangular faces, and axis-aligned bounds."""
     vertices = np.array(mesh.points)
     faces = np.array(mesh.faces).reshape((-1, 4))[:, 1:4]
@@ -209,17 +224,21 @@ def mesh_bounds(mesh):
     return vertices, faces, mins, maxs
 
 
-def normalization_tensors(mins, maxs, device="cuda"):
+def normalization_tensors(
+    mins: np.ndarray, maxs: np.ndarray, device: str = "cuda"
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Build center and isotropic half-range tensors for normalized coordinates."""
-    mins = torch.tensor(mins, dtype=torch.float32, device=device)
-    maxs = torch.tensor(maxs, dtype=torch.float32, device=device)
-    mid_vals = 0.5 * (mins + maxs)
-    max_range = torch.max(maxs - mins)
+    mins_t = torch.tensor(mins, dtype=torch.float32, device=device)
+    maxs_t = torch.tensor(maxs, dtype=torch.float32, device=device)
+    mid_vals = 0.5 * (mins_t + maxs_t)
+    max_range = torch.max(maxs_t - mins_t)
     range_vals = 0.5 * torch.ones(3, dtype=torch.float32, device=device) * max_range
     return mid_vals, range_vals
 
 
-def build_sdf_training_samples(mesh, padding=2.0, spacing=0.2, device="cuda"):
+def build_sdf_training_samples(
+    mesh: pv.PolyData, padding: float = 2.0, spacing: float = 0.2, device: str = "cuda"
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Create normalized distance samples and normalized surface samples from a mesh."""
     vertices, faces, mins, maxs = mesh_bounds(mesh)
     x_vals = np.arange(mins[0] - padding, maxs[0] + padding, spacing)
@@ -245,7 +264,7 @@ def build_sdf_training_samples(mesh, padding=2.0, spacing=0.2, device="cuda"):
     return points_dist, scalars_dist, points_surf, normals_surf, mid_vals, range_vals
 
 
-def sample_points_near_surface(mesh, distance_scale=0.02):
+def sample_points_near_surface(mesh: pv.PolyData, distance_scale: float = 0.02) -> tuple[torch.Tensor, torch.Tensor]:
     """Sample points offset from mesh vertices along vertex normals."""
     mesh = mesh.copy()
     mesh.compute_normals(cell_normals=False, inplace=True)
@@ -257,7 +276,9 @@ def sample_points_near_surface(mesh, distance_scale=0.02):
     return points + distances.unsqueeze(1) * normals, normals
 
 
-def limit_samples(points, scalars, max_count):
+def limit_samples(
+    points: torch.Tensor, scalars: torch.Tensor, max_count: int | None
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Limit distance samples before training."""
     if max_count is None or points.shape[0] <= max_count:
         return points, scalars
@@ -265,17 +286,17 @@ def limit_samples(points, scalars, max_count):
 
 
 def train_sdf_from_mesh(
-    mesh_path,
-    save_path,
-    device="cuda",
-    learning_rate=1e-5,
-    epoch_count=60,
-    batch_size=3000,
-    save_every_epochs=5,
-    padding=2.0,
-    spacing=0.2,
-    max_distance_points=None,
-):
+    mesh_path: str | Path,
+    save_path: str | Path,
+    device: str = "cuda",
+    learning_rate: float = 1e-5,
+    epoch_count: int = 60,
+    batch_size: int = 3000,
+    save_every_epochs: int = 5,
+    padding: float = 2.0,
+    spacing: float = 0.2,
+    max_distance_points: int | None = None,
+) -> torch.nn.Module:
     """Train an SDF checkpoint directly from a mesh file."""
     mesh = pv.read(mesh_path)
     points_dist, scalars_dist, points_surf, normals_surf, _, _ = build_sdf_training_samples(

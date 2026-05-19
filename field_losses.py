@@ -68,7 +68,7 @@ _COLLISION_SCHEDULE_FAR: tuple[float, float, float] = (8e3, 1.6e4, 4e4)
 collision losses."""
 
 
-def collision_weight(epoch: int, early: float, mid: float, late: float):
+def collision_weight(epoch: int, early: float, mid: float, late: float) -> float:
     """Piecewise collision-loss weight schedule from the original experiments."""
     if epoch > 300:
         return late
@@ -77,7 +77,13 @@ def collision_weight(epoch: int, early: float, mid: float, late: float):
     return early
 
 
-def compute_layer_loss(batch_input_points, scalar_field, data, config, master_switch: str | None = None):
+def compute_layer_loss(
+    batch_input_points: torch.Tensor,
+    scalar_field,
+    data,
+    config,
+    master_switch: str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, dict, torch.Tensor]:
     """
     Loss to penalize the violation of threholds on gradient norm and curvature of layer field
 
@@ -136,7 +142,14 @@ def compute_layer_loss(batch_input_points, scalar_field, data, config, master_sw
     return loss, record, out, grads
 
 
-def _accumulate_collision_term(loss, record, term, weight, name: str, epoch: int):
+def _accumulate_collision_term(
+    loss: torch.Tensor,
+    record: torch.Tensor,
+    term: torch.Tensor,
+    weight: float,
+    name: str,
+    epoch: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Add a collision sub-term to loss and record, warning if non-finite.
 
     The original code silently dropped NaN/Inf terms from ``loss`` while
@@ -155,7 +168,17 @@ def _accumulate_collision_term(loss, record, term, weight, name: str, epoch: int
     return loss + weight * term, record + term
 
 
-def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, collision_loss, data, config, epoch: int):
+def add_collision_losses(
+    loss: torch.Tensor,
+    batch_input_points: torch.Tensor,
+    out: dict,
+    grads: torch.Tensor,
+    scalar_field,
+    collision_loss,
+    data,
+    config,
+    epoch: int,
+) -> tuple[torch.Tensor, torch.Tensor | int]:
     """Add near, far, and inside collision penalties for the current tool model."""
     if not loss_enabled(config, "use_collision_loss"):
         return loss, 0
@@ -229,7 +252,13 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
     return loss, col_record
 
 
-def add_base_loss(loss, scalar_field, batch_base_points, config, epoch: int):
+def add_base_loss(
+    loss: torch.Tensor,
+    scalar_field,
+    batch_base_points: torch.Tensor,
+    config,
+    epoch: int,
+) -> tuple[torch.Tensor, torch.Tensor | int]:
     """Encourage base points to align with the build direction."""
     if epoch <= 0 or not loss_enabled(config, "use_base_loss"):
         return loss, 0
@@ -243,7 +272,14 @@ def add_base_loss(loss, scalar_field, batch_base_points, config, epoch: int):
     return loss + grad_loss, grad_loss
 
 
-def add_boundary_support_loss(loss, scalar_field, batch_bound_points, batch_bound_normals, config, epoch: int):
+def add_boundary_support_loss(
+    loss: torch.Tensor,
+    scalar_field,
+    batch_bound_points: torch.Tensor,
+    batch_bound_normals: torch.Tensor,
+    config,
+    epoch: int,
+) -> tuple[torch.Tensor, torch.Tensor | int]:
     """Penalize boundary gradients that violate the configured support angle."""
     if epoch <= 0 or not loss_enabled(config, "use_boundary_support_loss"):
         return loss, 0
@@ -256,16 +292,16 @@ def add_boundary_support_loss(loss, scalar_field, batch_bound_points, batch_boun
 
 def compute_toolpath_loss(
     models,
-    batch_input_points,
-    primary_out,
-    batch_min,
-    batch_max,
-    batch_range_lim,
+    batch_input_points: torch.Tensor,
+    primary_out: dict,
+    batch_min: torch.Tensor,
+    batch_max: torch.Tensor,
+    batch_range_lim: torch.Tensor,
     data,
     config,
-    gradient_norm_weight,
-    curvature_weight,
-):
+    gradient_norm_weight: float,
+    curvature_weight: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Train the toolpath field to stay tangent to the layer field with limited curvature and uniform spacing."""
     if not loss_enabled(config, "use_toolpath_loss"):
         zero = primary_out["scalars"].sum() * 0.0
@@ -313,8 +349,16 @@ def compute_toolpath_loss(
 
 
 def compute_stress_losses(
-    models, batch_s_points, batch_s_dirs, batch_s_wts, batch_min, batch_max, batch_range_lim, epoch: int, config
-):
+    models,
+    batch_s_points: torch.Tensor,
+    batch_s_dirs: torch.Tensor,
+    batch_s_wts: torch.Tensor,
+    batch_min: torch.Tensor,
+    batch_max: torch.Tensor,
+    batch_range_lim: torch.Tensor,
+    epoch: int,
+    config,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Align layer/toolpath directions with stress directions at sampled points."""
     if epoch <= 1 or not loss_enabled(config, "use_stress_loss"):
         zero = torch.tensor(0.0, device=batch_s_points.device)

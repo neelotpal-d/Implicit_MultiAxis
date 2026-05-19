@@ -19,7 +19,7 @@ from shared_utils import (
 from siren_pytorch import SirenNet
 
 
-def load_geometry_bundle(config, boundary_mode="points"):
+def load_geometry_bundle(config, boundary_mode: str = "points") -> dict:
     """
     Load mesh-derived training data into one broad dictionary.
 
@@ -69,7 +69,9 @@ def load_geometry_bundle(config, boundary_mode="points"):
     }
 
 
-def load_boundary_tensors(mesh, y_min, config, boundary_mode="points"):
+def load_boundary_tensors(
+    mesh, y_min: float, config, boundary_mode: str = "points"
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Load base/boundary tensors using either mesh point normals or face normals."""
     # Support-free examples use face centers/normals. Alignment examples use
     # mesh points/normals because platform loss acts on boundary samples.
@@ -115,7 +117,12 @@ def load_boundary_tensors(mesh, y_min, config, boundary_mode="points"):
     return base_points, boundary_points, boundary_normals
 
 
-def load_stress_bundle(config, mid_vals, range_vals, input_count=None):
+def load_stress_bundle(
+    config,
+    mid_vals: torch.Tensor,
+    range_vals: torch.Tensor,
+    input_count: int | None = None,
+) -> dict:
     """Load optional stress tensors and normalized/downsampled stress points."""
     if not config.stress_file_path:
         return {
@@ -151,7 +158,7 @@ def load_stress_bundle(config, mid_vals, range_vals, input_count=None):
     }
 
 
-def farthest_point_sampling_indices(points, num_samples, device):
+def farthest_point_sampling_indices(points: torch.Tensor, num_samples: int, device: str) -> torch.Tensor:
     """Pick spread-out samples so stress points cover the part more evenly."""
     num_samples = int(num_samples)
     centroids = torch.zeros(num_samples, dtype=torch.long, device=device)
@@ -168,7 +175,13 @@ def farthest_point_sampling_indices(points, num_samples, device):
     return centroids
 
 
-def downsample_stress_points(stress_points, stress_dirs, stress_mags, input_count, device):
+def downsample_stress_points(
+    stress_points: torch.Tensor,
+    stress_dirs: torch.Tensor,
+    stress_mags: torch.Tensor,
+    input_count: int,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     indices = farthest_point_sampling_indices(stress_points, int(input_count), device)
     stress_points = stress_points[indices].detach()
     stress_points.requires_grad = True
@@ -179,7 +192,7 @@ def downsample_stress_points(stress_points, stress_dirs, stress_mags, input_coun
     return stress_points, stress_dirs, stress_mags
 
 
-def compute_stress_weights(stress_mags):
+def compute_stress_weights(stress_mags: torch.Tensor) -> torch.Tensor:
     """Create stress weights and zero out compression samples."""
     av_max_stress = torch.mean(abs(stress_mags[:, 0]))
     stress_mag_ratios = abs(stress_mags[:, 0]) / av_max_stress
@@ -193,7 +206,13 @@ def compute_stress_weights(stress_mags):
     return stress_mag_ratio_wts
 
 
-def make_input_stress_loaders(config, input_points, stress_points=None, stress_dirs=None, stress_weights=None):
+def make_input_stress_loaders(
+    config,
+    input_points: torch.Tensor,
+    stress_points: torch.Tensor | None = None,
+    stress_dirs: torch.Tensor | None = None,
+    stress_weights: torch.Tensor | None = None,
+) -> tuple[DataLoader, DataLoader | None]:
     """Create loaders for layer points plus optional stress points."""
     input_batches = int(input_points.shape[0] / config.input_batch_target_size) + 1
     input_batch_size = int(input_points.shape[0] / input_batches) + 1
@@ -210,8 +229,14 @@ def make_input_stress_loaders(config, input_points, stress_points=None, stress_d
 
 
 def make_toolpath_alignment_loaders(
-    config, input_points, stress_points, stress_dirs, stress_weights, boundary_points, boundary_normals
-):
+    config,
+    input_points: torch.Tensor,
+    stress_points: torch.Tensor,
+    stress_dirs: torch.Tensor,
+    stress_weights: torch.Tensor,
+    boundary_points: torch.Tensor,
+    boundary_normals: torch.Tensor,
+) -> dict:
     """Create input, stress, and boundary loaders for alignment workflows."""
     input_loader, stress_loader = make_input_stress_loaders(
         config,
@@ -225,10 +250,6 @@ def make_toolpath_alignment_loaders(
     boundary_batch_size = int(boundary_points.shape[0] / boundary_batches) + 1
     boundary_dataset = TensorDataset(boundary_points, boundary_normals)
     boundary_loader = DataLoader(boundary_dataset, batch_size=boundary_batch_size, shuffle=True)
-
-    print(len(input_loader))
-    print(len(stress_loader))
-    print(len(boundary_loader))
 
     # Match the longest essential loader so each iteration has all sample types.
     if len(input_loader) > len(stress_loader):
@@ -245,7 +266,13 @@ def make_toolpath_alignment_loaders(
     }
 
 
-def make_support_free_loaders(config, input_points, base_points, boundary_points, boundary_normals):
+def make_support_free_loaders(
+    config,
+    input_points: torch.Tensor,
+    base_points: torch.Tensor,
+    boundary_points: torch.Tensor,
+    boundary_normals: torch.Tensor,
+) -> dict:
     """Create input, base, and boundary loaders for support-constrained workflows."""
     input_batches = int(input_points.shape[0] / config.input_batch_target_size) + 1
     boundary_batches = int(boundary_points.shape[0] / config.boundary_batch_target_size) + 1
@@ -257,10 +284,6 @@ def make_support_free_loaders(config, input_points, base_points, boundary_points
     base_loader = DataLoader(base_points, batch_size=config.base_batch_size, shuffle=True)
     boundary_dataset = TensorDataset(boundary_points, boundary_normals)
     boundary_loader = DataLoader(boundary_dataset, batch_size=boundary_batch_size, shuffle=True)
-
-    print(len(input_loader))
-    print(len(boundary_loader))
-    print(len(base_loader))
 
     # Base points are always cycled because they are an auxiliary constraint.
     if len(input_loader) > len(boundary_loader):
@@ -279,7 +302,7 @@ def make_support_free_loaders(config, input_points, base_points, boundary_points
     }
 
 
-def build_scalar_field(config, checkpoint_path, num_layers, w0_initial, w0):
+def build_scalar_field(config, checkpoint_path: str, num_layers: int, w0_initial: float, w0: float) -> SirenNet:
     """Create a SIREN scalar field and optionally load a checkpoint."""
     scalar_field = SirenNet(3, 128, 1, num_layers, w0_initial=w0_initial, w0=w0).to(config.device)
     if checkpoint_path:
@@ -288,7 +311,12 @@ def build_scalar_field(config, checkpoint_path, num_layers, w0_initial, w0):
     return scalar_field
 
 
-def build_field_bundle(config, include_secondary=True, platform_factory=None, platform_scale=1.0):
+def build_field_bundle(
+    config,
+    include_secondary: bool = True,
+    platform_factory=None,
+    platform_scale: float = 1.0,
+) -> dict:
     """
     Build a broad model bundle with optional second field and platform params.
 
