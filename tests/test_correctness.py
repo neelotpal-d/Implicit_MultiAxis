@@ -111,6 +111,30 @@ def _make_fake_collision_returning_nan():
     return FakeCollision()
 
 
+def test_tool_profiles_round_trip():
+    """Every shipped tool profile must load via the new init_tool API."""
+    from collisionLoss import TOOL_PROFILES, CollisionLoss
+
+    cl = CollisionLoss(sample_num=20, angle=60.0, device="cpu")
+    for name in TOOL_PROFILES:
+        cl.init_tool(name, scale=1.0)
+        assert cl.dist_array_far is not None
+        assert cl.radi_far is not None
+        assert cl.dist_array_in is not None
+        assert cl.radi_in is not None
+
+
+def test_init_tool_unknown_profile_raises():
+    """Unknown profile names must fail loudly, not silently do nothing."""
+    import pytest
+
+    from collisionLoss import CollisionLoss
+
+    cl = CollisionLoss(sample_num=20, angle=60.0, device="cpu")
+    with pytest.raises(KeyError, match="Unknown tool profile"):
+        cl.init_tool("does_not_exist", scale=1.0)
+
+
 def test_collision_nan_is_logged_not_silent(capsys):
     """A non-finite collision loss must produce a visible warning.
 

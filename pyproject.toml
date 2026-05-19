@@ -77,8 +77,3 @@ ignore = [
 # expected. E402 fires on each such import; suppress the noise.
 "examples/*.py" = ["E402"]
 "tests/*.py" = ["E402"]
-# collisionLoss.py has leftover dead local assignments from a prior refactor
-# (grad_dirns, z_axis, angle_offset). These will be removed when the file's
-# 5x init_tool_* / 3x sample_tangent_circle / 3x cone-sampler duplicates are
-# consolidated. Suppressed here until that refactor lands.
-"collisionLoss.py" = ["F841"]

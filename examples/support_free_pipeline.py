@@ -85,7 +85,7 @@ def build_collision_loss(data: SupportFreePreparedData, config: CommonTrainingCo
         device=config.device,
         model_load_path=config.sdf_checkpoint_path,
     )
-    collision_loss.init_tool_dense_uniform1(scale=data.range_vals[0])
+    collision_loss.init_tool("dense_uniform1", scale=float(data.range_vals[0]))
     return collision_loss
 
 

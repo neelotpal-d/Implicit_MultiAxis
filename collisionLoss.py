@@ -1,1064 +1,584 @@
+"""Collision and clearance losses for neural scalar fields.
+
+The training scripts treat the gradient of a scalar field as a local build /
+tool direction. This module samples a small "tool envelope" around that
+direction and penalises scalar-field orderings that would imply
+self-intersection, layer collision, or tool/model interference.
+
+Public API:
+
+- :class:`CollisionLoss` — additive (deposition) manufacturing.
+- :class:`ToolProfile` and :data:`TOOL_PROFILES` — tool envelope presets
+  selectable by name. The profile encodes the physical envelope; update
+  the entry when the tool shape, nozzle/cutter radius, or required
+  clearance changes.
+
+The cone half-angle (``angle`` in :class:`CollisionLoss`) and the per-profile
+distances/radii are in the same unit as the un-normalised mesh; the
+``CollisionLoss.init_tool`` call divides by mesh scale to convert.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 
 from sdfField import sdfModel
 
-"""
-Collision and clearance losses for neural scalar fields.
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
 
-The training scripts treat the gradient of a scalar field as a local build/tool
-direction. This file samples a small "tool envelope" around that direction and
-penalizes scalar-field orderings that would imply self-intersection, layer
-collision, or tool/model interference.
+DENOM_FLOOR: float = 1e-10
+"""Floor added to vector norms before normalisation, to avoid div-by-zero."""
 
-The init_tool_* presets are specific to our current tool shape/size and
-clearance assumptions. Change those radii and sample distances whenever the
-physical tool geometry changes.
-"""
+_SCALAR_COMP_RATIO_NEAR: float = 1e-4
+"""Compensation ratio for the near cone loss; offsets the boundary slightly
+to remove zero-margin degeneracy when sampled values exactly equal the
+base scalar."""
+
+_SCALAR_COMP_RATIO_FAR: float = 2e-4
+"""Compensation ratio for the far cylinder losses (see _SCALAR_COMP_RATIO_NEAR)."""
+
+_ERROR_SHARPNESS: float = 10.0
+"""Multiplier on the violation before relu; controls how steeply the loss
+ramps once a sample crosses the threshold."""
+
+_FAR_DIST_JITTER_FRAC: float = 0.75
+"""Fraction of the first-two-sample spacing used as random jitter on the
+far-cylinder distances in ``collision_scalar_loss_far2``."""
 
 
-def sample_directions_in_cone(directions, samples):
+# ---------------------------------------------------------------------------
+# Tool envelope presets
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToolProfile:
+    """Tool envelope geometry consumed by :meth:`CollisionLoss.init_tool`.
+
+    The values describe a three-layer envelope used by the collision checks:
+
+    - ``dist_vals``: along-gradient distances probed inside the forward cone.
+    - ``dist_array_far`` / ``radi_far``: distances and radius of the outer
+      tangent-plane cylinder used by the far cone checks.
+    - ``dist_array_in`` / ``radi_in``: distances and radius of the inner
+      tangent-plane cylinder used by the inner cone checks.
+
+    Distances and radii are expressed in mesh units; ``init_tool`` divides
+    by the mesh scale to convert to the normalised coordinate system.
     """
-    Generates samples within a cone of angle theta around each direction in `directions`.
+
+    dist_vals: tuple[float, ...]
+    dist_array_far: tuple[float, ...]
+    radi_far: float
+    dist_array_in: tuple[float, ...]
+    radi_in: float
+
+
+TOOL_PROFILES: dict[str, ToolProfile] = {
+    "standard": ToolProfile(
+        dist_vals=(3.75, 7.5, 9.75, 11.0, 12.75),
+        dist_array_far=(22.5, 33.75, 45.0),
+        radi_far=25.0,
+        dist_array_in=(7.5, 11.25, 33.75),
+        radi_in=11.25,
+    ),
+    "dense": ToolProfile(
+        dist_vals=(3.75, 7.5, 9.75, 12.75),
+        dist_array_far=(22.5, 33.75, 35.0, 40.0, 42.5, 45.0, 47.5, 50.0, 55.0, 60.0, 65.0, 70.0),
+        radi_far=25.0,
+        dist_array_in=(4.3, 7.5, 11.25, 33.75, 44.5, 49.5, 52.5, 57.5, 70.0, 80.0),
+        radi_in=11.25,
+    ),
+    # Fertility / clip experiments use the "dense_uniform1" preset.
+    # Note: the original code set radi_far=24 for fertility and 28 for clip;
+    # the published value 24 is kept here. Override per-experiment by adding
+    # a new entry rather than editing this one.
+    "dense_uniform1": ToolProfile(
+        dist_vals=(3.75, 7.5, 9.75, 12.75),
+        dist_array_far=(18.0, 23.0, 27.5, 32.5, 37.5, 42.5, 47.5, 52.5, 57.5),
+        radi_far=24.0,
+        dist_array_in=(4.5, 7.25, 11.25, 33.75, 44.5, 49.5, 52.5, 57.5),
+        radi_in=11.25,
+    ),
+    "dense_uniform2": ToolProfile(
+        dist_vals=(3.75, 7.5, 9.75, 12.75),
+        dist_array_far=(25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0),
+        radi_far=25.0,
+        dist_array_in=(7.5, 11.25, 33.75, 44.5, 49.5, 52.5, 57.5, 70.0, 80.0),
+        radi_in=11.25,
+    ),
+    "dense1": ToolProfile(
+        dist_vals=(3.75, 7.5, 9.75, 12.75),
+        dist_array_far=(22.5, 35.0, 40.0, 42.5, 70.0, 80.0, 90.0),
+        radi_far=25.0,
+        dist_array_in=(7.5, 11.25, 33.75, 44.5, 60.0),
+        radi_in=11.25,
+    ),
+    "dense2": ToolProfile(
+        dist_vals=(3.75, 7.5, 9.75, 12.75),
+        dist_array_far=(33.75, 45.0, 50.0, 55.0, 60.0, 65.0, 85.0),
+        radi_far=25.0,
+        dist_array_in=(7.5, 52.5, 57.5, 70.0, 80.0),
+        radi_in=11.25,
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Cone and circle samplers
+# ---------------------------------------------------------------------------
+
+
+def sample_directions_in_cone(directions: torch.Tensor, samples: torch.Tensor) -> torch.Tensor:
+    """Rotate canonical-frame samples to align with each input direction.
 
     Args:
-        directions: Tensor of shape (n, 3), each row is a unit direction vector.
-        samples: Tensor of shape (m, 3) representing pre-sampled directions in the canonical frame.
+        directions: (n, 3) unit-direction vectors.
+        samples: (m, 3) canonical samples drawn from the +Z-aligned cone.
 
     Returns:
-        A tensor of shape (n, m, 3) containing sampled directions.
+        (n, m, 3) tensor of sampled directions in the local frame of each
+        input direction.
     """
-    n, m = directions.shape[0], samples.shape[0]
+    n = directions.shape[0]
 
-    # Build a local frame for every input direction, then express the canonical
-    # cone samples in that frame.
-    z_axis = torch.tensor([0.0, 0.0, 1.0], device=directions.device).expand(n, 3)
-
-    # Choose an arbitrary perpendicular vector
-    arbitrary_vector = torch.tensor([1.0, 0.0, 0.0], device=directions.device).expand(n, 3)
-
-    # Handle cases where direction is near (0,0,1) to avoid singularity
+    # Build a local frame for every input direction, then express the
+    # canonical cone samples in that frame.
+    arbitrary_vector = torch.tensor([1.0, 0.0, 0.0], device=directions.device).expand(n, 3).clone()
+    # If a direction is close to the chosen "arbitrary" vector, swap to a
+    # different axis to avoid a degenerate cross product.
     close_to_x = torch.abs(directions[:, 0]) > 0.99
-    # arbitrary_vector[close_to_z] = torch.tensor([0.0, 1.0, 0.0], device=directions.device)
-    arbitrary_vector = arbitrary_vector.clone()  # Clone before modifying
     arbitrary_vector[close_to_x] = torch.tensor([0.0, 1.0, 0.0], device=directions.device)
 
-    u = torch.nn.functional.normalize(torch.cross(arbitrary_vector, directions), dim=1)
-    v = torch.cross(directions, u)
+    u = torch.nn.functional.normalize(torch.cross(arbitrary_vector, directions, dim=-1), dim=1)
+    v = torch.cross(directions, u, dim=-1)
 
-    # Rotate samples to align with the given directions
     rotated_samples = (
-        samples[:, 0:1] * u.unsqueeze(1) + samples[:, 1:2] * v.unsqueeze(1) + samples[:, 2:3] * directions.unsqueeze(1)
+        samples[:, 0:1] * u.unsqueeze(1)
+        + samples[:, 1:2] * v.unsqueeze(1)
+        + samples[:, 2:3] * directions.unsqueeze(1)
+    )
+    return rotated_samples  # (n, m, 3)
+
+
+def get_cone_sample_direction_cosines3(angle: float, m: int, device: str = "cuda") -> torch.Tensor:
+    """Sample ``m`` unit directions inside a cone of half-angle ``angle`` (deg).
+
+    Layout: one axis sample, then ``m // 4`` stratified at ``theta / 2`` with
+    uniformly spaced phi, then the remaining samples biased toward the cone
+    boundary via cos^n sampling with deterministically spaced phi.
+
+    Args:
+        angle: Cone opening half-angle in degrees.
+        m: Number of samples to draw.
+        device: Torch device to place the samples on.
+
+    Returns:
+        ``(m, 3)`` tensor of direction cosines in the +Z-aligned canonical
+        frame.
+    """
+    theta = torch.tensor(angle * torch.pi / 180)  # opening angle in radians
+
+    # First sample: exactly along the cone axis.
+    samples = [torch.tensor([[0.0, 0.0, 1.0]], device=device)]
+
+    # Second group: m/4 samples at alpha = theta/2 with uniform phi.
+    num_fixed_alpha = m // 4
+    phi_fixed = torch.linspace(0.0, 2 * torch.pi, num_fixed_alpha, device=device)
+    alpha_fixed = theta / 2
+    cos_alpha_fixed = torch.cos(alpha_fixed)
+    sin_alpha_fixed = torch.sin(alpha_fixed)
+
+    samples.append(
+        torch.stack(
+            (
+                sin_alpha_fixed * torch.cos(phi_fixed),
+                sin_alpha_fixed * torch.sin(phi_fixed),
+                cos_alpha_fixed * torch.ones_like(phi_fixed),
+            ),
+            dim=-1,
+        )
     )
 
-    return rotated_samples  # Shape (n, m, 3)
-
-
-def get_cone_sample_direction_cosines(angle, m, device="cuda"):
-    """Randomly sample directions in a canonical cone aligned with +Z."""
-    theta = torch.tensor(angle * torch.pi / 180)  # Opening angle in radians
-
-    # Precompute samples in the canonical frame
-    cos_alpha = torch.rand(m) * (1 - torch.cos(theta)) + torch.cos(theta)
-    sin_alpha = torch.sqrt(1 - cos_alpha**2)
-    phi = torch.rand(m) * (2 * torch.pi)
-
-    x = sin_alpha * torch.cos(phi)
-    y = sin_alpha * torch.sin(phi)
-    z = cos_alpha
-    samples = torch.stack((x, y, z), dim=-1)  # Shape (m, 3)
-
-    return samples.to(device)
-
-
-def get_cone_sample_direction_cosines2(angle, m, device="cuda"):
-    """Sample a canonical cone with extra coverage near the cone boundary."""
-    theta = torch.tensor(angle * torch.pi / 180)  # Opening angle in radians
-
-    # First sample: exactly along the axis
-    samples = [torch.tensor([[0.0, 0.0, 1.0]], device=device)]
-
-    # Second group: m/4 samples at alpha = theta/2 with uniform phi
-    num_fixed_alpha = m // 4
-    phi_fixed = torch.linspace(0, 2 * torch.pi, num_fixed_alpha, device=device)
-    alpha_fixed = theta / 2
-    cos_alpha_fixed = torch.cos(alpha_fixed)
-    sin_alpha_fixed = torch.sin(alpha_fixed)
-
-    x_fixed = sin_alpha_fixed * torch.cos(phi_fixed)
-    y_fixed = sin_alpha_fixed * torch.sin(phi_fixed)
-    z_fixed = cos_alpha_fixed * torch.ones_like(phi_fixed)
-
-    samples.append(torch.stack((x_fixed, y_fixed, z_fixed), dim=-1))
-
-    # Third group: (3m/4 - 1) samples, biased near alpha = theta
+    # Third group: (3m/4 - 1) samples biased toward the cone boundary.
+    # NOTE: the original code wrote ``(1 - 1) * torch.rand(...) ** n`` which
+    # collapsed every sample in this group to ``cos(theta)``. We now bias
+    # randomly between ``cos(theta)`` (boundary) and 1 (axis) via cos^n.
     num_remaining = m - (num_fixed_alpha + 1)
-    phi_remaining = torch.rand(num_remaining, device=device) * (2 * torch.pi)
-
-    # Biasing towards theta (e.g., using cos^n sampling for concentration)
-    n = 5  # Adjust this exponent to control concentration
-    cos_alpha_remaining = torch.cos(theta) + (1 - torch.cos(theta)) * torch.rand(num_remaining, device=device) ** n
+    phi_remaining = torch.linspace(0.0, 2 * torch.pi, num_remaining, device=device)
+    n_bias = 5
+    cos_alpha_remaining = torch.cos(theta) + (1 - torch.cos(theta)) * torch.rand(num_remaining, device=device) ** n_bias
     sin_alpha_remaining = torch.sqrt(1 - cos_alpha_remaining**2)
 
-    x_remaining = sin_alpha_remaining * torch.cos(phi_remaining)
-    y_remaining = sin_alpha_remaining * torch.sin(phi_remaining)
-    z_remaining = cos_alpha_remaining
+    samples.append(
+        torch.stack(
+            (
+                sin_alpha_remaining * torch.cos(phi_remaining),
+                sin_alpha_remaining * torch.sin(phi_remaining),
+                cos_alpha_remaining,
+            ),
+            dim=-1,
+        )
+    )
 
-    samples.append(torch.stack((x_remaining, y_remaining, z_remaining), dim=-1))
-
-    # Combine all samples
-    samples = torch.cat(samples, dim=0)
-
-    return samples.to(device)
-
-
-def get_cone_sample_direction_cosines3(angle, m, device="cuda"):
-    """
-    Samples `m` directions within a cone of opening angle `angle` (in degrees),
-    ensuring uniform azimuthal (`phi`) distribution.
-
-    Args:
-        angle (float): Cone opening angle in degrees.
-        m (int): Number of samples.
-        device (str): Device ('cuda' or 'cpu').
-
-    Returns:
-        torch.Tensor: Shape (m, 3), sampled direction cosines.
-    """
-    theta = torch.tensor(angle * torch.pi / 180, device=device)  # Opening angle in radians
-
-    # First sample: Exactly along the axis
-    samples = [torch.tensor([[0.0, 0.0, 1.0]], device=device)]
-
-    # Second group: m/4 samples at alpha = theta/2, with uniform phi
-    num_fixed_alpha = m // 4
-    phi_fixed = torch.linspace(0, 2 * torch.pi, num_fixed_alpha, device=device)
-    alpha_fixed = theta / 2
-    cos_alpha_fixed = torch.cos(alpha_fixed)
-    sin_alpha_fixed = torch.sin(alpha_fixed)
-
-    x_fixed = sin_alpha_fixed * torch.cos(phi_fixed)
-    y_fixed = sin_alpha_fixed * torch.sin(phi_fixed)
-    z_fixed = cos_alpha_fixed * torch.ones_like(phi_fixed)
-
-    samples.append(torch.stack((x_fixed, y_fixed, z_fixed), dim=-1))
-
-    # Third group: (3m/4 - 1) samples, evenly distributed in phi
-    num_remaining = m - (num_fixed_alpha + 1)
-
-    # Stratify phi by spreading them evenly instead of random sampling
-    phi_remaining = torch.linspace(0, 2 * torch.pi, num_remaining, device=device)
-
-    # Biasing towards theta using cos^n sampling. The original code wrote
-    # `(1 - 1) * torch.rand(...)` which collapsed every sample in this group
-    # to exactly cos(theta), making the cone a 2- or 3-latitude rosette.
-    # Matching the randomized branch in get_cone_sample_direction_cosines2.
-    n = 5  # Adjust this exponent to control concentration
-    cos_alpha_remaining = torch.cos(theta) + (1 - torch.cos(theta)) * torch.rand(num_remaining, device=device) ** n
-    sin_alpha_remaining = torch.sqrt(1 - cos_alpha_remaining**2)
-
-    x_remaining = sin_alpha_remaining * torch.cos(phi_remaining)
-    y_remaining = sin_alpha_remaining * torch.sin(phi_remaining)
-    z_remaining = cos_alpha_remaining
-
-    samples.append(torch.stack((x_remaining, y_remaining, z_remaining), dim=-1))
-
-    # Combine all samples
-    samples = torch.cat(samples, dim=0)
-
-    return samples.to(device)
+    return torch.cat(samples, dim=0).to(device)
 
 
-def sample_points_along_directions(sampled_directions, dist_vals, origins):
-    """
-    Samples points along given directions at specified distances and translates them by the origins.
+def sample_points_along_directions(
+    sampled_directions: torch.Tensor, dist_vals: torch.Tensor, origins: torch.Tensor
+) -> torch.Tensor:
+    """Translate each direction sample by a set of distances and origins.
 
     Args:
-        sampled_directions: Tensor of shape (n, m, 3) containing direction vectors.
-        dist_vals: Tensor of shape (k,) containing distances to sample points along each direction.
-        origins: Tensor of shape (n, 3) containing the origin points for each cone.
+        sampled_directions: ``(n, m, 3)`` direction unit vectors.
+        dist_vals: ``(k,)`` distances along each direction.
+        origins: ``(n, 3)`` origin points per cone.
 
     Returns:
-        A tensor of shape (n, m, k, 3) containing sampled points.
+        ``(n, m, k, 3)`` sampled points.
     """
-    n, m, _ = sampled_directions.shape
+    n = sampled_directions.shape[0]
     k = dist_vals.shape[0]
 
-    # Expand dimensions to broadcast correctly
-    dist_vals = dist_vals.view(1, 1, k, 1)  # Shape (1, 1, k, 1)
-    sampled_directions = sampled_directions.unsqueeze(2)  # Shape (n, m, 1, 3)
-
-    sampled_points = sampled_directions * dist_vals  # Shape (n, m, k, 3)
-
-    # Translate points by the origins
-    origins = origins.view(n, 1, 1, 3)  # Shape (n, 1, 1, 3)
-    sampled_points = sampled_points + origins
-
-    return sampled_points
+    dist_view = dist_vals.view(1, 1, k, 1)
+    sampled_points = sampled_directions.unsqueeze(2) * dist_view  # (n, m, k, 3)
+    return sampled_points + origins.view(n, 1, 1, 3)
 
 
-def sample_tangent_circle(base_points, gradients, m, d):
-    """
-    For each point in `base_points`, sample `m` points in a uniform circle in the tangent plane at distance `d`.
+def sample_tangent_circle(
+    base_points: torch.Tensor,
+    gradients: torch.Tensor,
+    m: int,
+    d: float | torch.Tensor,
+    *,
+    randomize_phase: bool = False,
+) -> torch.Tensor:
+    """Sample ``m`` points on a tangent-plane circle of radius ``d``.
+
+    The gradient is treated as the local layer normal; the sampled circle
+    approximates a cutter/nozzle footprint around the base point.
 
     Args:
-        base_points (torch.Tensor): Shape (n, 3), the original points.
-        gradients (torch.Tensor): Shape (n, 3), the gradient directions (plane normal).
-        m (int): Number of samples per point.
-        d (float): Radius of the circle.
+        base_points: ``(n, 3)`` origin points.
+        gradients: ``(n, 3)`` gradient (= layer normal) vectors at each point.
+        m: Number of circle samples per point.
+        d: Circle radius.
+        randomize_phase: If True, jitter the starting angle so consecutive
+            calls don't always test the same spokes. Used by the ``_far2``
+            collision sampler to de-correlate the cylinder check across
+            batches.
 
     Returns:
-        torch.Tensor: Shape (n, m, 3), sampled points in the tangent plane.
+        ``(n, m, 3)`` tangent-circle samples.
     """
     n = base_points.shape[0]
+    device = base_points.device
 
-    # The gradient is treated as the normal of the local layer surface; the
-    # sampled circle approximates a cutter/nozzle footprint around the point.
-    # Normalize gradients to get unit normal directions
-    normal = gradients / (gradients.norm(dim=-1, keepdim=True) + 1e-8)  # (n, 3)
+    normal = gradients / (gradients.norm(dim=-1, keepdim=True) + DENOM_FLOOR)
 
-    # Create an arbitrary vector for cross product (must not be parallel to normal)
-    arbitrary_vector = torch.tensor([1.0, 0.0, 0.0], device=base_points.device).expand(n, 3).clone()
-    close_to_x = torch.abs(normal[:, 0]) > 0.9  # Avoid collinearity with x-axis
-    arbitrary_vector[close_to_x] = torch.tensor([0.0, 1.0, 0.0], device=base_points.device)
+    arbitrary_vector = torch.tensor([1.0, 0.0, 0.0], device=device).expand(n, 3).clone()
+    close_to_x = torch.abs(normal[:, 0]) > 0.9
+    arbitrary_vector[close_to_x] = torch.tensor([0.0, 1.0, 0.0], device=device)
 
-    # Compute first tangent vector (u) using cross product
-    u = torch.cross(normal, arbitrary_vector)  # (n, 3)
-    u = u / (u.norm(dim=-1, keepdim=True) + 1e-8)  # Normalize
+    u = torch.cross(normal, arbitrary_vector, dim=-1)
+    u = u / (u.norm(dim=-1, keepdim=True) + DENOM_FLOOR)
+    v = torch.cross(normal, u, dim=-1)
+    v = v / (v.norm(dim=-1, keepdim=True) + DENOM_FLOOR)
 
-    # Compute second tangent vector (v) using cross product
-    v = torch.cross(normal, u)  # (n, 3)
-    v = v / (v.norm(dim=-1, keepdim=True) + 1e-8)  # Normalize
+    if randomize_phase:
+        phase = (2 * torch.pi / m) * float(np.random.rand())
+        theta = torch.linspace(phase, 2 * torch.pi + phase, m, device=device).view(1, m, 1)
+    else:
+        theta = torch.linspace(0.0, 2 * torch.pi, m, device=device).view(1, m, 1)
 
-    # Generate `m` angles uniformly in [0, 2π]
-    theta = torch.linspace(0, 2 * torch.pi, m, device=base_points.device).view(1, m, 1)  # (1, m)
-
-    # Compute circle points in local tangent basis
-    circle_offsets = d * (torch.cos(theta) * u.unsqueeze(1) + torch.sin(theta) * v.unsqueeze(1))  # (n, m, 3)
-
-    # Translate to base points
-    sampled_points = base_points.unsqueeze(1) + circle_offsets  # (n, m, 3)
-
-    return sampled_points
+    circle_offsets = d * (torch.cos(theta) * u.unsqueeze(1) + torch.sin(theta) * v.unsqueeze(1))
+    return base_points.unsqueeze(1) + circle_offsets  # (n, m, 3)
 
 
-def sample_tangent_circle2(base_points, gradients, m, d):
-    """
-    For each point in `base_points`, sample `m` points in a uniform circle in the tangent plane at distance `d`.
+def sample_along_gradient(
+    tangent_samples: torch.Tensor, gradients: torch.Tensor, distances: torch.Tensor
+) -> torch.Tensor:
+    """Sweep tangent-plane footprint points along the local gradient direction.
 
     Args:
-        base_points (torch.Tensor): Shape (n, 3), the original points.
-        gradients (torch.Tensor): Shape (n, 3), the gradient directions (plane normal).
-        m (int): Number of samples per point.
-        d (float): Radius of the circle.
+        tangent_samples: ``(n, m, 3)`` points sampled on the tangent plane.
+        gradients: ``(n, 3)`` gradient direction at each base point.
+        distances: ``(k,)`` distances along the gradient.
 
     Returns:
-        torch.Tensor: Shape (n, m, 3), sampled points in the tangent plane.
+        ``(n, m, k, 3)`` swept points.
     """
-    n = base_points.shape[0]
-
-    # Same footprint as sample_tangent_circle, but with a random angular offset
-    # so repeated calls do not always test the same spokes.
-    # Normalize gradients to get unit normal directions
-    normal = gradients / (gradients.norm(dim=-1, keepdim=True) + 1e-8)  # (n, 3)
-
-    # Create an arbitrary vector for cross product (must not be parallel to normal)
-    arbitrary_vector = torch.tensor([1.0, 0.0, 0.0], device=base_points.device).expand(n, 3).clone()
-    close_to_x = torch.abs(normal[:, 0]) > 0.9  # Avoid collinearity with x-axis
-    arbitrary_vector[close_to_x] = torch.tensor([0.0, 1.0, 0.0], device=base_points.device)
-
-    # Compute first tangent vector (u) using cross product
-    u = torch.cross(normal, arbitrary_vector)  # (n, 3)
-    u = u / (u.norm(dim=-1, keepdim=True) + 1e-8)  # Normalize
-
-    # Compute second tangent vector (v) using cross product
-    v = torch.cross(normal, u)  # (n, 3)
-    v = v / (v.norm(dim=-1, keepdim=True) + 1e-8)  # Normalize
-
-    # Generate `m` angles uniformly in [0, 2π]
-    angle_offset = torch.pi / m
-    angle_offset_randomized = (2 * torch.pi / m) * np.random.rand()
-    theta = torch.linspace(
-        angle_offset_randomized, 2 * torch.pi + angle_offset_randomized, m, device=base_points.device
-    ).view(1, m, 1)  # (1, m)
-
-    # Compute circle points in local tangent basis
-    circle_offsets = d * (torch.cos(theta) * u.unsqueeze(1) + torch.sin(theta) * v.unsqueeze(1))  # (n, m, 3)
-
-    # Translate to base points
-    sampled_points = base_points.unsqueeze(1) + circle_offsets  # (n, m, 3)
-
-    return sampled_points
-
-
-def sample_tangent_circle3(base_points, gradients, m, d):
-    """
-    For each point in `base_points`, sample `m` points in a uniform circle in the tangent plane at distance `d`.
-
-    Args:
-        base_points (torch.Tensor): Shape (n, 3), the original points.
-        gradients (torch.Tensor): Shape (n, 3), the gradient directions (plane normal).
-        m (int): Number of samples per point.
-        d (float): Radius of the circle.
-
-    Returns:
-        torch.Tensor: Shape (n, m, 3), sampled points in the tangent plane.
-    """
-    n = base_points.shape[0]
-
-    # Normalize gradients to get unit normal directions
-    normal = gradients / (gradients.norm(dim=-1, keepdim=True) + 1e-8)  # (n, 3)
-
-    # Create an arbitrary vector for cross product (must not be parallel to normal)
-    arbitrary_vector = torch.tensor([1.0, 0.0, 0.0], device=base_points.device).expand(n, 3).clone()
-    close_to_x = torch.abs(normal[:, 0]) > 0.9  # Avoid collinearity with x-axis
-    arbitrary_vector[close_to_x] = torch.tensor([0.0, 1.0, 0.0], device=base_points.device)
-
-    # Compute first tangent vector (u) using cross product
-    u = torch.cross(normal, arbitrary_vector)  # (n, 3)
-    u = u / (u.norm(dim=-1, keepdim=True) + 1e-8)  # Normalize
-
-    # Compute second tangent vector (v) using cross product
-    v = torch.cross(normal, u)  # (n, 3)
-    v = v / (v.norm(dim=-1, keepdim=True) + 1e-8)  # Normalize
-
-    # Generate `m` angles uniformly in [0, 2π]
-    angle_offset = torch.pi / m
-    angle_offset_randomized = (2 * torch.pi / m) * np.random.rand()
-    theta = torch.linspace(
-        angle_offset_randomized, 2 * torch.pi + angle_offset_randomized, m, device=base_points.device
-    ).view(1, m, 1)  # (1, m)
-
-    # Compute circle points in local tangent basis
-    circle_offsets = d * (torch.cos(theta) * u.unsqueeze(1) + torch.sin(theta) * v.unsqueeze(1))  # (n, m, 3)
-
-    # Translate to base points
-    sampled_points = base_points.unsqueeze(1) + circle_offsets  # (n, m, 3)
-
-    return sampled_points
-
-
-def sample_along_gradient(tangent_samples, gradients, distances):
-    """
-    For each point in `tangent_samples`, sample `k` points along the gradient direction.
-
-    Args:
-        tangent_samples (torch.Tensor): Shape (n, m, 3), points sampled on the tangent plane.
-        gradients (torch.Tensor): Shape (n, 3), the gradient direction at each base point.
-        distances (torch.Tensor): Shape (k,), distances to sample along the gradient.
-
-    Returns:
-        torch.Tensor: Shape (n, m, k, 3), sampled points along the gradient.
-    """
-    n, m, _ = tangent_samples.shape
     k = distances.shape[0]
-
-    # Sweep every tangent-plane footprint point forward along the local build
-    # direction to create a sparse volume/envelope test.
-    # Normalize gradients to get unit direction
-    grad_unit = gradients / (gradients.norm(dim=-1, keepdim=True) + 1e-8)  # (n, 3)
-
-    # Compute displacement vectors for each distance
+    grad_unit = gradients / (gradients.norm(dim=-1, keepdim=True) + DENOM_FLOOR)
     displacement = grad_unit.unsqueeze(1).unsqueeze(2) * distances.view(1, 1, k, 1)  # (n, 1, k, 3)
+    return tangent_samples.unsqueeze(2) + displacement  # (n, m, k, 3)
 
-    # Expand tangent_samples to (n, m, k, 3) and apply displacements
-    sampled_points = tangent_samples.unsqueeze(2) + displacement  # (n, m, k, 3)
 
-    return sampled_points
+# ---------------------------------------------------------------------------
+# CollisionLoss
+# ---------------------------------------------------------------------------
 
 
 class CollisionLoss:
-    """
-    Additive-style collision loss.
+    """Additive-style collision loss.
 
-    This class checks whether samples in the local forward tool envelope have
-    scalar values that should already be "behind" the base point. Positive
-    errors mean the learned scalar ordering would let layer/tool geometry cut
-    into occupied or earlier material.
+    Checks whether samples in the local forward tool envelope have scalar
+    values that should already be "behind" the base point. Positive errors
+    mean the learned scalar ordering would let layer/tool geometry cut into
+    occupied or earlier material.
+
+    Use :meth:`init_tool` to configure the physical envelope from a named
+    preset in :data:`TOOL_PROFILES`. The preset must match the tool used
+    during data collection; see :class:`ToolProfile` for the geometry it
+    encodes.
     """
 
-    def __init__(self, sample_num, angle, device="cuda", distList=[0.05, 0.1, 0.4, 0.8], model_load_path=None):
-        # Cone directions are generated once and rotated to each gradient during
-        # loss evaluation; distances/radii are configured by init_tool_*.
-        # IMPORTANT: the init_tool_* presets below are calibrated for our
-        # current tool geometry only. If the tool shape, nozzle/cutter radius,
-        # or required clearance changes, these distances and radii must be
-        # changed to match the new physical envelope.
+    def __init__(
+        self,
+        sample_num: int,
+        angle: float,
+        device: str = "cuda",
+        distList: tuple[float, ...] | list[float] = (0.05, 0.1, 0.4, 0.8),
+        model_load_path: str | None = None,
+    ) -> None:
+        # Cone directions are generated once and rotated to each gradient
+        # during loss evaluation; distances and radii are configured by
+        # init_tool.
         self.sampled_directions_seed = get_cone_sample_direction_cosines3(angle, sample_num, device=device)
-        self.dist_vals = torch.tensor(distList, dtype=torch.float32, device=device)
-        self.sdfModel = None
+        self.dist_vals = torch.tensor(list(distList), dtype=torch.float32, device=device)
+        self.sdfModel: sdfModel | None = None
         if model_load_path:
             self.sdfModel = sdfModel(device=device, model_load_path=model_load_path)
         self.device = device
-        self.dist_array_far = None
-        self.radi_far = None
-        self.dist_array_in = None
-        self.radi_in = None
+        self.dist_array_far: torch.Tensor | None = None
+        self.radi_far: float | None = None
+        self.dist_array_in: torch.Tensor | None = None
+        self.radi_in: float | None = None
 
-    def init_tool_standard(self, scale=1.0):
-        """Configure a coarse, fixed tool envelope in model units."""
+    def init_tool(self, profile_name: str, scale: float = 1.0) -> None:
+        """Configure the tool envelope from a named preset.
 
-        self.dist_vals = torch.tensor([3.75, 7.5, 9.75, 11.0, 12.75], dtype=torch.float32, device=self.device)
-        self.dist_vals = self.dist_vals / scale
+        Args:
+            profile_name: Key into :data:`TOOL_PROFILES`.
+            scale: Mesh scale; distances and radii are divided by this
+                value to convert from mesh units to the normalised
+                coordinate system used by the field model.
 
-        self.dist_array_far = torch.tensor([22.5, 33.75, 45], dtype=torch.float32, device=self.device)
-        self.radi_far = 25.0
-        self.dist_array_far = self.dist_array_far / scale
-        self.radi_far = self.radi_far / scale
+        Raises:
+            KeyError: If ``profile_name`` is not a known preset.
+        """
+        if profile_name not in TOOL_PROFILES:
+            raise KeyError(
+                f"Unknown tool profile {profile_name!r}; known profiles: {sorted(TOOL_PROFILES)!r}"
+            )
 
-        self.dist_array_in = torch.tensor([7.5, 11.25, 33.75], dtype=torch.float32, device=self.device)
-        self.radi_in = 11.25
-        self.dist_array_in = self.dist_array_in / scale
-        self.radi_in = self.radi_in / scale
+        profile = TOOL_PROFILES[profile_name]
+        s = float(scale)
+        device = self.device
 
-        print("--------------------------------")
-        print(f"Initialising tool for a scale {scale}")
-        print(f"cone samples: {self.dist_vals}")
-        print(f"Far cylinder: radi({self.radi_far:.2f}); samples:({self.dist_array_far})")
-        print(f"Inner cylinder: radi({self.radi_in:.2f}); samples:({self.dist_array_in})")
-        print("--------------------------------")
+        self.dist_vals = torch.tensor(profile.dist_vals, dtype=torch.float32, device=device) / s
+        self.dist_array_far = torch.tensor(profile.dist_array_far, dtype=torch.float32, device=device) / s
+        self.radi_far = profile.radi_far / s
+        self.dist_array_in = torch.tensor(profile.dist_array_in, dtype=torch.float32, device=device) / s
+        self.radi_in = profile.radi_in / s
 
-    def init_tool_dense(self, scale=1.0):
-        """Configure denser near/far sample distances for stricter clearance."""
+    # ----- internal helpers -------------------------------------------------
 
-        self.dist_vals = torch.tensor([3.75, 7.5, 9.75, 12.75], dtype=torch.float32, device=self.device)
-        self.dist_vals = self.dist_vals / scale
+    def _combined_in_mask(self, sample_points: torch.Tensor, limVals) -> torch.Tensor:
+        """Combine the axis-aligned domain mask with the optional SDF mask.
 
-        self.dist_array_far = torch.tensor(
-            [22.5, 33.75, 35, 40, 42.5, 45, 47.5, 50, 55, 60, 65, 70], dtype=torch.float32, device=self.device
-        )
-        self.radi_far = 25.0
-        self.dist_array_far = self.dist_array_far / scale
-        self.radi_far = self.radi_far / scale
-
-        self.dist_array_in = torch.tensor(
-            [4.3, 7.5, 11.25, 33.75, 44.5, 49.5, 52.5, 57.5, 70, 80], dtype=torch.float32, device=self.device
-        )
-        self.radi_in = 11.25
-        self.dist_array_in = self.dist_array_in / scale
-        self.radi_in = self.radi_in / scale
-
-        print("--------------------------------")
-        print(f"Initialising tool for a scale {scale}")
-        print(f"cone samples: {self.dist_vals}")
-        print(f"Far cylinder: radi({self.radi_far:.2f}); samples:({self.dist_array_far})")
-        print(f"Inner cylinder: radi({self.radi_in:.2f}); samples:({self.dist_array_in})")
-        print("--------------------------------")
-
-    def init_tool_dense_uniform1(self, scale=1.0):
-        """Uniform-ish dense profile tuned in comments for fertility/clip runs."""
-
-        self.dist_vals = torch.tensor([3.75, 7.5, 9.75, 12.75], dtype=torch.float32, device=self.device)
-        self.dist_vals = self.dist_vals / scale
-
-        # self.dist_array_far =  torch.tensor([15.00, 22.5,27.5,32.5,37.5,42.5,47.5,52.5,57.5,62.5], dtype = torch.float32, device=self.device)
-        # self.dist_array_far =  torch.tensor([15.00,20.5,27.5,32.5,37.5,42.5,47.5,52.5,57.5], dtype = torch.float32, device=self.device)
-        self.dist_array_far = torch.tensor(
-            [18.00, 23.00, 27.5, 32.5, 37.5, 42.5, 47.5, 52.5, 57.5], dtype=torch.float32, device=self.device
-        )
-
-        self.radi_far = 24  # 24.00 change it to 24 for fertility 28 for clip
-        self.dist_array_far = self.dist_array_far / scale
-        self.radi_far = self.radi_far / scale
-
-        self.dist_array_in = torch.tensor(
-            [4.5, 7.25, 11.25, 33.75, 44.5, 49.5, 52.5, 57.5], dtype=torch.float32, device=self.device
-        )
-        self.radi_in = 11.25
-        self.dist_array_in = self.dist_array_in / scale
-        self.radi_in = self.radi_in / scale
-
-        print("--------------------------------")
-        print(f"Initialising tool for a scale {scale}")
-        print(f"cone samples: {self.dist_vals}")
-        print(f"Far cylinder: radi({self.radi_far:.2f}); samples:({self.dist_array_far})")
-        print(f"Inner cylinder: radi({self.radi_in:.2f}); samples:({self.dist_array_in})")
-        print("--------------------------------")
-
-    def init_tool_dense_uniform2(self, scale=1.0):
-        """Alternative uniform-ish dense profile with farther samples."""
-
-        self.dist_vals = torch.tensor([3.75, 7.5, 9.75, 12.75], dtype=torch.float32, device=self.device)
-        self.dist_vals = self.dist_vals / scale
-
-        self.dist_array_far = torch.tensor(
-            [25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0], dtype=torch.float32, device=self.device
-        )
-        self.radi_far = 25.0
-        self.dist_array_far = self.dist_array_far / scale
-        self.radi_far = self.radi_far / scale
-
-        self.dist_array_in = torch.tensor(
-            [7.5, 11.25, 33.75, 44.5, 49.5, 52.5, 57.5, 70, 80], dtype=torch.float32, device=self.device
-        )
-        self.radi_in = 11.25
-        self.dist_array_in = self.dist_array_in / scale
-        self.radi_in = self.radi_in / scale
-
-        print("--------------------------------")
-        print(f"Initialising tool for a scale {scale}")
-        print(f"cone samples: {self.dist_vals}")
-        print(f"Far cylinder: radi({self.radi_far:.2f}); samples:({self.dist_array_far})")
-        print(f"Inner cylinder: radi({self.radi_in:.2f}); samples:({self.dist_array_in})")
-        print("--------------------------------")
-
-    def init_tool_dense1(self, scale=1.0):
-        """Sparse experimental profile with selected far and inner distances."""
-
-        self.dist_vals = torch.tensor([3.75, 7.5, 9.75, 12.75], dtype=torch.float32, device=self.device)
-        self.dist_vals = self.dist_vals / scale
-
-        self.dist_array_far = torch.tensor([22.5, 35, 40, 42.5, 70, 80, 90], dtype=torch.float32, device=self.device)
-        self.radi_far = 25.0
-        self.dist_array_far = self.dist_array_far / scale
-        self.radi_far = self.radi_far / scale
-
-        self.dist_array_in = torch.tensor([7.5, 11.25, 33.75, 44.5, 60], dtype=torch.float32, device=self.device)
-        self.radi_in = 11.25
-        self.dist_array_in = self.dist_array_in / scale
-        self.radi_in = self.radi_in / scale
-
-        print("--------------------------------")
-        print(f"Initialising tool for a scale {scale}")
-        print(f"cone samples: {self.dist_vals}")
-        print(f"Far cylinder: radi({self.radi_far:.2f}); samples:({self.dist_array_far})")
-        print(f"Inner cylinder: radi({self.radi_in:.2f}); samples:({self.dist_array_in})")
-        print("--------------------------------")
-
-    def init_tool_dense2(self, scale=1.0):
-        """Sparse experimental profile biased toward farther checks."""
-
-        self.dist_vals = torch.tensor([3.75, 7.5, 9.75, 12.75], dtype=torch.float32, device=self.device)
-        self.dist_vals = self.dist_vals / scale
-
-        self.dist_array_far = torch.tensor([33.75, 45, 50, 55, 60, 65, 85], dtype=torch.float32, device=self.device)
-        self.radi_far = 25.0
-        self.dist_array_far = self.dist_array_far / scale
-        self.radi_far = self.radi_far / scale
-
-        self.dist_array_in = torch.tensor([7.5, 52.5, 57.5, 70, 80], dtype=torch.float32, device=self.device)
-        self.radi_in = 11.25
-        self.dist_array_in = self.dist_array_in / scale
-        self.radi_in = self.radi_in / scale
-
-        print("--------------------------------")
-        print(f"Initialising tool for a scale {scale}")
-        print(f"cone samples: {self.dist_vals}")
-        print(f"Far cylinder: radi({self.radi_far:.2f}); samples:({self.dist_array_far})")
-        print(f"Inner cylinder: radi({self.radi_in:.2f}); samples:({self.dist_array_in})")
-        print("--------------------------------")
-
-    def collision_gradient_loss(self, points, grads, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Penalize sampled directions where the field gradient points backward."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sampled_directions = sample_directions_in_cone(grad_dirns, self.sampled_directions_seed)
-        sample_points = sample_points_along_directions(sampled_directions, self.dist_vals, points)
-        output_at_samples = scalarField(sample_points)
-        gradient_at_samples = output_at_samples["grads"]
-
-        ####CAUTION: This may lead to instability#############
-
-        gradient_at_samples = gradient_at_samples / (torch.norm(gradient_at_samples, dim=1) + 1e-10).unsqueeze(1)
-
-        #######################################################
-        direction_at_samples = sampled_directions.unsqueeze(2)
-        dot_prod = torch.sum(gradient_at_samples * direction_at_samples, dim=3)
-
-        # select the negative ones
-        error_samples = torch.relu(-dot_prod)
-        error_mask = error_samples > 0
+        ``limFun`` is only consulted when an SDF model is loaded; this lets
+        the loss focus on samples inside the modelled part / valid domain.
+        """
         in_mask = self.limModel(sample_points, limVals)
-        error_mask = error_mask * in_mask
+        if self.sdfModel is not None:
+            in_mask_sdf = self.limFun(sample_points)
+            assert in_mask.shape == in_mask_sdf.shape
+            in_mask = in_mask * in_mask_sdf
+        return in_mask
 
+    @staticmethod
+    def _scalar_compensation(scalars: torch.Tensor, ratio: float) -> torch.Tensor:
+        """Tiny offset based on the scalar field range; avoids zero-margin
+        degeneracy when sampled values are numerically equal to the base
+        scalar."""
+        return ratio * (torch.max(scalars) - torch.min(scalars))
+
+    @staticmethod
+    def _violation_loss(
+        errors: torch.Tensor,
+        in_mask: torch.Tensor,
+        *,
+        sharpness: float = _ERROR_SHARPNESS,
+        squeeze_last: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Hinge-loss reduction shared by the scalar collision losses.
+
+        Returns ``(mean_squared_violation, error_mask)``.
+        """
+        error_samples = torch.relu(sharpness * errors)
+        if squeeze_last:
+            error_mask = (error_samples > 0)[..., 0] * in_mask
+        else:
+            error_mask = (error_samples > 0) * in_mask
         ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
+        return ms_error, error_mask
 
-        # To use a mask later
+    # ----- collision losses -------------------------------------------------
 
-        return {
-            "loss": ms_error,
-            "directions": sampled_directions,
-            "samples": sample_points,
-            "dir_at_samples": direction_at_samples,
-            "mask": error_mask,
-            "in_mask": in_mask,
-        }
-
-    def collision_scalar_loss(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
+    def collision_scalar_loss(
+        self,
+        points: torch.Tensor,
+        grads: torch.Tensor,
+        scalars: torch.Tensor,
+        scalarField,
+        limVals=(1.0, 1.0, 1.0),
+    ) -> dict:
         """Cone-envelope loss based on scalar ordering along candidate tool paths."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
+        grad_unit = grads / (grads.norm(dim=1, keepdim=True) + DENOM_FLOOR)
 
-        sampled_directions = sample_directions_in_cone(grad_dirns, self.sampled_directions_seed)
+        sampled_directions = sample_directions_in_cone(grad_unit, self.sampled_directions_seed)
         sample_points = sample_points_along_directions(sampled_directions, self.dist_vals, points)
-        output_at_samples = scalarField(sample_points)
-        scalar_at_samples = output_at_samples["scalars"]
+        scalar_at_samples = scalarField(sample_points)["scalars"]
 
-        scalars_at_baseSamples = scalars.unsqueeze(1).unsqueeze(2)
-
-        # select the negative ones
-
-        scalars_max = torch.max(scalars)
-        scalars_min = torch.min(scalars)
-        # Tiny compensation avoids zero-margin degeneracy when sampled values
-        # are numerically equal to the base scalar.
-        scalar_comp = 1e-4 * (scalars_max - scalars_min)
-
-        errors = scalars_at_baseSamples - scalar_at_samples + scalar_comp.detach()
-        error_samples = torch.relu(10 * errors)
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        if self.sdfModel:
-            # Optional learned SDF mask keeps the loss focused on samples inside
-            # the modeled part/valid domain.
-            in_mask2 = self.limFun(sample_points)
-            assert in_mask.shape == in_mask2.shape
-            in_mask = in_mask * in_mask2
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
-
-        return {
-            "loss": ms_error,
-            "directions": sampled_directions,
-            "samples": sample_points,
-            "mask": error_mask,
-            "in_mask": in_mask,
-        }
-
-    def collision_mixed_loss(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Combine gradient-facing and scalar-ordering checks in the cone envelope."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sampled_directions = sample_directions_in_cone(grad_dirns, self.sampled_directions_seed)
-        sample_points = sample_points_along_directions(sampled_directions, self.dist_vals, points)
-        output_at_samples = scalarField(sample_points)
-        gradient_at_samples = output_at_samples["grads"]
-        scalars_at_samples = output_at_samples["scalars"]
-        ####CAUTION: This may lead to instability#############
-
-        gradient_at_samples = gradient_at_samples / (torch.norm(gradient_at_samples, dim=1) + 1e-10).unsqueeze(1)
-
-        #######################################################
-        direction_at_samples = sampled_directions.unsqueeze(2)
-        dot_prod = torch.sum(gradient_at_samples * direction_at_samples, dim=3)
-        # select the negative ones
-        error_samples = torch.relu(-dot_prod)
-
-        ####
         scalars_at_base = scalars.unsqueeze(1).unsqueeze(2)
+        scalar_comp = self._scalar_compensation(scalars, _SCALAR_COMP_RATIO_NEAR)
+        errors = scalars_at_base - scalar_at_samples + scalar_comp.detach()
 
-        scalar_diffs = scalars_at_base - scalars_at_samples
-        ##Adding compensate term to offset the boundary a bit to remove degenerecies:
-        scalars_max = torch.max(scalars)
-        scalars_min = torch.min(scalars)
-        scalar_comp = 0.02 * (scalars_max - scalars_min)
-        ##
-        scalar_diffs = scalar_diffs + scalar_comp.detach()
-        in_range_mask = scalar_diffs[..., 0] > 0
-        ####
-
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-        error_mask = error_mask * in_mask * in_range_mask
-
-        ms_error = torch.mean(error_samples[in_mask * in_range_mask] * error_samples[in_mask * in_range_mask])
-        if torch.sum(in_mask * in_range_mask) == 0:
-            ms_error = 0
-        # To use a mask later
+        in_mask = self._combined_in_mask(sample_points, limVals)
+        ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {
             "loss": ms_error,
             "directions": sampled_directions,
             "samples": sample_points,
-            "dir_at_samples": direction_at_samples,
             "mask": error_mask,
             "in_mask": in_mask,
         }
 
     def collision_scalar_loss_far(
         self,
-        points,
-        grads,
-        scalars,
+        points: torch.Tensor,
+        grads: torch.Tensor,
+        scalars: torch.Tensor,
         scalarField,
-        limVals=[1.0, 1.0, 1.0],
-        dist_array=[0.3, 0.45, 0.6],
-        radi_=0.3,
-        n_angles=10,
-    ):
-        """Check a cylindrical/ring-like envelope farther from the base point."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
+        limVals=(1.0, 1.0, 1.0),
+        dist_array=(0.3, 0.45, 0.6),
+        radi_: float = 0.3,
+        n_angles: int = 10,
+    ) -> dict:
+        """Check a cylindrical envelope farther from the base point."""
+        radi = self.radi_far if self.radi_far is not None else radi_
+        sample_points_at_base = sample_tangent_circle(points, grads, n_angles, radi)
 
-        radi = 0
-        if self.radi_far is not None:
-            radi = self.radi_far
-        else:
-            radi = radi_
-
-        sample_points_at_base = sample_tangent_circle(points, grads, n_angles, radi)  # n,m,3 used 0.15
-
-        sample_distances = None
         if self.dist_array_far is not None:
             sample_distances = self.dist_array_far
         else:
-            sample_distances = torch.tensor(dist_array, device=self.device)  # k, used 0.3, 0.4, 0.6
+            sample_distances = torch.tensor(dist_array, device=self.device)
 
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
+        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)
         scalar_at_samples = scalarField(sample_points)["scalars"]
-        scalars_at_baseSamples = scalars.unsqueeze(1).unsqueeze(2)
+        scalars_at_base = scalars.unsqueeze(1).unsqueeze(2)
+        scalar_comp = self._scalar_compensation(scalars, _SCALAR_COMP_RATIO_FAR)
+        errors = scalars_at_base - scalar_at_samples + scalar_comp.detach()
 
-        scalars_max = torch.max(scalars)
-        scalars_min = torch.min(scalars)
-        scalar_comp = 2e-4 * (scalars_max - scalars_min)
-
-        errors = scalars_at_baseSamples - scalar_at_samples + scalar_comp.detach()
-        error_samples = torch.relu(10 * errors)
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-
-        if self.sdfModel:
-            in_mask2 = self.limFun(sample_points)
-            assert in_mask.shape == in_mask2.shape
-            in_mask = in_mask * in_mask2
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
+        in_mask = self._combined_in_mask(sample_points, limVals)
+        ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
 
     def collision_scalar_loss_far2(
         self,
-        points,
-        grads,
-        scalars,
+        points: torch.Tensor,
+        grads: torch.Tensor,
+        scalars: torch.Tensor,
         scalarField,
-        limVals=[1.0, 1.0, 1.0],
-        dist_array=[0.3, 0.45, 0.6],
-        radi_=0.3,
-        n_angles=10,
-    ):
-        """Far envelope variant with randomized circle phase and distances."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
+        limVals=(1.0, 1.0, 1.0),
+        dist_array=(0.3, 0.45, 0.6),
+        radi_: float = 0.3,
+        n_angles: int = 10,
+    ) -> dict:
+        """Far envelope variant with randomised circle phase and jittered distances."""
+        radi = self.radi_far if self.radi_far is not None else radi_
+        sample_points_at_base = sample_tangent_circle(
+            points, grads, n_angles, radi, randomize_phase=True
+        )
 
-        radi = 0
-        if self.radi_far is not None:
-            radi = self.radi_far
-        else:
-            radi = radi_
-
-        sample_points_at_base = sample_tangent_circle2(points, grads, n_angles, radi)  # n,m,3 used 0.15
-
-        sample_distances = None
         if self.dist_array_far is not None:
-            sample_distances = self.dist_array_far + 0.75 * (
-                self.dist_array_far[1] - self.dist_array_far[0]
-            ) * torch.rand(self.dist_array_far.shape, device=self.device)
+            jitter = (
+                _FAR_DIST_JITTER_FRAC
+                * (self.dist_array_far[1] - self.dist_array_far[0])
+                * torch.rand(self.dist_array_far.shape, device=self.device)
+            )
+            sample_distances = self.dist_array_far + jitter
         else:
-            sample_distances = torch.tensor(dist_array, device=self.device)  # k, used 0.3, 0.4, 0.6
+            sample_distances = torch.tensor(dist_array, device=self.device)
 
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
+        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)
         scalar_at_samples = scalarField(sample_points)["scalars"]
-        scalars_at_baseSamples = scalars.unsqueeze(1).unsqueeze(2)
+        scalars_at_base = scalars.unsqueeze(1).unsqueeze(2)
+        scalar_comp = self._scalar_compensation(scalars, _SCALAR_COMP_RATIO_FAR)
+        errors = scalars_at_base - scalar_at_samples + scalar_comp.detach()
 
-        scalars_max = torch.max(scalars)
-        scalars_min = torch.min(scalars)
-        scalar_comp = 2e-4 * (scalars_max - scalars_min)
-
-        errors = scalars_at_baseSamples - scalar_at_samples + scalar_comp.detach()
-        error_samples = torch.relu(10 * errors)
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-
-        if self.sdfModel:
-            in_mask2 = self.limFun(sample_points)
-            assert in_mask.shape == in_mask2.shape
-            in_mask = in_mask * in_mask2
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
+        in_mask = self._combined_in_mask(sample_points, limVals)
+        ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
 
     def collision_scalar_loss_far_in(
-        self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0], dist_array=[0.1, 0.15, 0.45], radi_=0.15
-    ):
+        self,
+        points: torch.Tensor,
+        grads: torch.Tensor,
+        scalars: torch.Tensor,
+        scalarField,
+        limVals=(1.0, 1.0, 1.0),
+        dist_array=(0.1, 0.15, 0.45),
+        radi_: float = 0.15,
+    ) -> dict:
         """Inner-radius envelope check for closer material/tool interference."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
+        radi = self.radi_in if self.radi_in is not None else radi_
+        sample_points_at_base = sample_tangent_circle(points, grads, 10, radi)
 
-        radi = 0
-        if self.radi_in is not None:
-            radi = self.radi_in
-        else:
-            radi = radi_
-
-        sample_points_at_base = sample_tangent_circle(points, grads, 10, radi)  # n,m,3 used 0.15
-
-        sample_distances = None
         if self.dist_array_in is not None:
             sample_distances = self.dist_array_in
         else:
-            sample_distances = torch.tensor(dist_array, device=self.device)  # k, used 0.3, 0.4, 0.6
+            sample_distances = torch.tensor(dist_array, device=self.device)
 
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
+        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)
         scalar_at_samples = scalarField(sample_points)["scalars"]
-        scalars_at_baseSamples = scalars.unsqueeze(1).unsqueeze(2)
+        scalars_at_base = scalars.unsqueeze(1).unsqueeze(2)
+        # NOTE: this method intentionally omits the scalar compensation term
+        # used by the near / far losses. The inner envelope is asked to be
+        # strictly above the base scalar, with no zero-margin slack.
+        errors = scalars_at_base - scalar_at_samples
 
-        errors = scalars_at_baseSamples - scalar_at_samples
-        error_samples = torch.relu(10 * errors)
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-
-        if self.sdfModel:
-            in_mask2 = self.limFun(sample_points)
-            assert in_mask.shape == in_mask2.shape
-            in_mask = in_mask * in_mask2
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
+        in_mask = self._combined_in_mask(sample_points, limVals)
+        ms_error, error_mask = self._violation_loss(errors, in_mask, squeeze_last=True)
 
         return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
 
-    def limModel(self, points, limVals):
-        """Axis-aligned normalized-domain mask used before averaging errors."""
-        x_points = torch.abs(points[..., 0])
-        y_points = torch.abs(points[..., 1])
-        z_points = torch.abs(points[..., 2])
+    # ----- masks ------------------------------------------------------------
 
-        mask_x = x_points < limVals[0]
-        mask_y = y_points < limVals[1]
-        mask_z = z_points < limVals[2]
+    def limModel(self, points: torch.Tensor, limVals) -> torch.Tensor:
+        """Axis-aligned normalised-domain mask used before averaging errors."""
+        x_mask = torch.abs(points[..., 0]) < limVals[0]
+        y_mask = torch.abs(points[..., 1]) < limVals[1]
+        z_mask = torch.abs(points[..., 2]) < limVals[2]
+        return x_mask * y_mask * z_mask
 
-        mask = mask_x * mask_y * mask_z
+    def limFun(self, points: torch.Tensor) -> torch.Tensor:
+        """Optional learned-SDF mask; True where samples are inside the SDF model.
 
-        return mask
-
-    def limFun(self, points):
-        """Optional learned-SDF mask; true where samples are inside the SDF model."""
-        inMask = True * torch.ones_like(points)
-        if self.sdfModel:
-            outVals = self.sdfModel.predictOuts(points)
-            outScalars = outVals["scalars"]
-            inMask = outScalars < 0
-            assert inMask.shape[-1] == 1
-        inMask = inMask[..., 0]
-
-        return inMask
-
-
-class CollisionLossMilling:
-    """
-    Milling-style collision loss.
-
-    These checks use the same local footprint sampling, but the SDF terms look
-    for tool samples that enter the solid model or violate already-defined
-    scalar layers from a subtractive/manufacturing-clearance perspective.
-    """
-
-    def __init__(self, sample_num, angle, device="cuda", distList=[0.05, 0.1, 0.4, 0.8], model_load_path=None):
-        self.sampled_directions_seed = get_cone_sample_direction_cosines3(angle, sample_num)
-        self.dist_vals = torch.tensor(distList, dtype=torch.float32, device=device)
-        self.sdfModel = None
-        if model_load_path:
-            self.sdfModel = sdfModel(model_load_path=model_load_path)
-        self.device = device
-
-    def collision_scalar_loss_far_in(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Milling variant that compares sampled scalars just beyond the base layer."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sample_points_at_base = sample_tangent_circle(points, grads, 10, 0.025)  # n,m,3 used 0.15
-        sample_distances = torch.tensor([0.1, 0.2, 0.4, 0.5], device=self.device)  # k, used 0.3, 0.4, 0.6
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
-        scalar_at_samples = scalarField(sample_points)["scalars"]
-        scalars_at_baseSamples = scalars.unsqueeze(1).unsqueeze(2)
-
-        errors = scalar_at_samples - scalars_at_baseSamples
-        error_samples = torch.relu(10 * errors)
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # adjust inmask to exclude points inside model as surfaces are not defined there
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
-
-        return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
-
-    def collision_scalar_loss_in_layer1(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Penalize sampled points that violate layer ordering outside the model."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sample_points_at_base = sample_tangent_circle(points, grads, 10, 0.085)  # n,m,3 used 0.15
-        sample_distances = torch.tensor(
-            [0.05, 0.1, 0.15, 0.20, 0.25, 0.3, 0.35, 0.5, 0.55, 0.6, 0.7, 0.8, 1.0], device=self.device
-        )  # k, used 0.3, 0.4, 0.6
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
-        sdf_at_samples = self.sdfModel.predictOuts(sample_points)["scalars"]
-
-        scalar_at_samples = scalarField(sample_points)["scalars"]
-        scalars_at_baseSamples = scalars.view(-1, 1, 1, 1)
-
-        errors = scalars_at_baseSamples - scalar_at_samples
-        error_samples = torch.relu(10 * errors)
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-        if self.sdfModel:
-            in_mask2 = self.limFun2(sample_points)
-            assert in_mask.shape == in_mask2.shape
-            in_mask = in_mask * in_mask2
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
-
-        return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
-
-    def collision_scalar_loss_in_model1(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Small-footprint SDF penetration penalty."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sample_points_at_base = sample_tangent_circle(points, grads, 10, 0.085)  # n,m,3 used 0.15
-        sample_distances = torch.tensor(
-            [0.05, 0.1, 0.15, 0.20, 0.25, 0.3, 0.35, 0.5, 0.55, 0.6, 0.7, 0.8, 1.0], device=self.device
-        )  # k, used 0.3, 0.4, 0.6
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
-        sdf_at_samples = self.sdfModel.predictOuts(sample_points)["scalars"]
-
-        errors = torch.relu(-sdf_at_samples)
-        error_samples = 10 * errors
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
-
-        return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
-
-    def collision_scalar_loss_in_model2(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Medium-footprint SDF penetration penalty."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sample_points_at_base = sample_tangent_circle(points, grads, 10, 0.29)  # n,m,3 used 0.15
-        sample_distances = torch.tensor(
-            [0.9, 1.1, 1.2, 1.5, 1.6, 1.7, 1.8], device=self.device
-        )  # k, used 0.3, 0.4, 0.6
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
-        sdf_at_samples = self.sdfModel.predictOuts(sample_points)["scalars"]
-
-        errors = torch.relu(-sdf_at_samples)
-        error_samples = 10 * errors
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
-
-        return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
-
-    def collision_scalar_loss_in_model3(self, points, grads, scalars, scalarField, limVals=[1.0, 1.0, 1.0]):
-        """Large-footprint SDF penetration penalty."""
-        grad_norms = torch.norm(grads, dim=1).unsqueeze(1)
-        grad_dirns = grads / (grad_norms + 1e-10)
-
-        sample_points_at_base = sample_tangent_circle(points, grads, 10, 1.00)  # n,m,3 used 0.15
-        sample_distances = torch.tensor([1.9, 2.0, 2.1, 2.2, 2.3], device=self.device)  # k, used 0.3, 0.4, 0.6
-        sample_points = sample_along_gradient(sample_points_at_base, grads, sample_distances)  # n,m,k,3
-
-        sdf_at_samples = self.sdfModel.predictOuts(sample_points)["scalars"]
-
-        errors = torch.relu(-sdf_at_samples)
-        error_samples = 10 * errors
-        error_mask = error_samples > 0
-        in_mask = self.limModel(sample_points, limVals)
-
-        # error_mask = error_mask[...,0]*in_mask
-
-        error_mask = error_mask[..., 0] * in_mask
-        ms_error = torch.mean(error_samples[in_mask] * error_samples[in_mask])
-
-        # To use a mask later
-
-        return {"loss": ms_error, "samples": sample_points, "mask": error_mask, "in_mask": in_mask}
-
-    def limModel(self, points, limVals):
-        """Axis-aligned normalized-domain mask used before averaging errors."""
-        x_points = torch.abs(points[..., 0])
-        y_points = torch.abs(points[..., 1])
-        z_points = torch.abs(points[..., 2])
-
-        mask_x = x_points < limVals[0]
-        mask_y = y_points < limVals[1]
-        mask_z = z_points < limVals[2]
-
-        mask = mask_x * mask_y * mask_z
-
-        return mask
-
-    def limFun(self, points):
-        """SDF mask for samples inside the solid model."""
-        inMask = True * torch.ones_like(points)
-        if self.sdfModel:
-            outVals = self.sdfModel.predictOuts(points)
-            outScalars = outVals["scalars"]
-            inMask = outScalars < 0
-            assert inMask.shape[-1] == 1
-        inMask = inMask[..., 0]
-
-        return inMask
-
-    def limFun2(self, points):
-        """SDF mask for samples outside the solid model."""
-        inMask = True * torch.ones_like(points)
-        if self.sdfModel:
-            outVals = self.sdfModel.predictOuts(points)
-            outScalars = outVals["scalars"]
-            inMask = outScalars > 0
-            assert inMask.shape[-1] == 1
-        inMask = inMask[..., 0]
-
-        return inMask
+        Only meaningful when a SDF checkpoint was passed to ``__init__``.
+        """
+        if self.sdfModel is None:
+            return torch.ones(points.shape[:-1], dtype=torch.bool, device=points.device)
+        out_vals = self.sdfModel.predictOuts(points)
+        in_mask = out_vals["scalars"] < 0
+        assert in_mask.shape[-1] == 1
+        return in_mask[..., 0]
