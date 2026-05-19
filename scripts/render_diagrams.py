@@ -470,10 +470,19 @@ def render_layer_field() -> None:
         return
 
     mesh = pv.read(str(mesh_path))
+    # Evaluate the field on the *original* mesh orientation — the SIREN
+    # was trained against this frame, so swapping axes before evaluation
+    # would feed it out-of-distribution coordinates.
     scalars = _evaluate_siren_on_mesh(
         mesh, ckpt_path, num_layers=10, w0=7.0, w0_initial=7.0
     )
     mesh.point_data["f_layer"] = scalars
+
+    # Display-time only: swap Y and Z so the part stands up rather than
+    # lying on its side. Has no effect on the field values.
+    pts = mesh.points.copy()
+    pts[:, [1, 2]] = pts[:, [2, 1]]
+    mesh.points = pts
 
     p = _pv_plotter(size=(1100, 900))
     p.add_mesh(
@@ -736,6 +745,10 @@ def render_teaser() -> None:
     scalars = _evaluate_siren_on_mesh(
         mesh, ckpt_path, num_layers=10, w0=7.0, w0_initial=7.0
     )
+    # Display-time Y<->Z swap so the part stands up. Field is already evaluated.
+    pts = mesh.points.copy()
+    pts[:, [1, 2]] = pts[:, [2, 1]]
+    mesh.points = pts
 
     def render(mesh_obj: pv.PolyData, *, with_scalars: bool, tag: str) -> Path:
         p = _pv_plotter(size=(600, 600))
