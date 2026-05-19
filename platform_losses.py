@@ -56,48 +56,40 @@ class PlatformModel(nn.Module):
         """Penalize platform direction, distance, and clearance violations."""
         self.selectPoints(surfacePoints, surfaceGrads, surfaceNormals)
 
-        palformDirNorm = torch.norm(self.platformDir) + 1e-10
+        platformDirNorm = torch.norm(self.platformDir) + 1e-10
 
         if self.targetDirs is not None:
-            dirError = self.targetDirs - (self.platformDir / palformDirNorm)
+            dirError = self.targetDirs - (self.platformDir / platformDirNorm)
             dirLoss = torch.mean(dirError * dirError)
         else:
             dirLoss = 0
 
         if self.selectedPoints is not None:
             dispVector = surfacePoints.detach() - self.platformBase
-            disps = torch.sum(dispVector * self.platformDir / palformDirNorm, dim=1)
-            disps = self.dispDist - disps
-            dispError = torch.relu(disps)
-            errorMask = dispError > 0
-            dispLoss = torch.mean(dispError[errorMask] * dispError[errorMask])
-            if torch.sum(errorMask) < 1:
-                dispLoss = 0
-        else:
-            dispLoss = 0
-
-        if self.selectedPoints is not None:
-            dispVector = surfacePoints.detach() - self.platformBase
-            disps = torch.sum(dispVector * self.platformDir / palformDirNorm, dim=1)
+            disps = torch.sum(dispVector * self.platformDir / platformDirNorm, dim=1)
             disps = disps - self.dispDist
             dispError2 = torch.min(disps)
             dispLoss2 = torch.mean(dispError2 * dispError2)
         else:
             dispLoss2 = 0
 
-        checkSamples = self.sample_circle_around_gradient(surfacePoints, surfaceGrads, 6, 60 / self.scale, 25 / self.scale)
-        dispLossCol = self._platform_clearance_loss(checkSamples, palformDirNorm)
+        checkSamples = self.sample_circle_around_gradient(
+            surfacePoints, surfaceGrads, 6, 60 / self.scale, 25 / self.scale
+        )
+        dispLossCol = self._platform_clearance_loss(checkSamples, platformDirNorm)
 
-        checkSamples = self.sample_circle_around_gradient(surfacePoints, surfaceGrads, 6, 30 / self.scale, 20 / self.scale)
-        dispLossCol2 = self._platform_clearance_loss(checkSamples, palformDirNorm)
+        checkSamples = self.sample_circle_around_gradient(
+            surfacePoints, surfaceGrads, 6, 30 / self.scale, 20 / self.scale
+        )
+        dispLossCol2 = self._platform_clearance_loss(checkSamples, platformDirNorm)
 
         return dirLoss + 0.1 * dispLoss2 + 0.05 * dispLossCol + 0.05 * dispLossCol2
 
-    def _platform_clearance_loss(self, checkSamples, palformDirNorm):
+    def _platform_clearance_loss(self, checkSamples, platformDirNorm):
         """Penalize sampled points that fall inside the platform clearance band."""
         checkSamples = checkSamples.view(-1, 3)
         dispVector = checkSamples.detach() - self.platformBase
-        disps = torch.sum(dispVector * self.platformDir / palformDirNorm, dim=1)
+        disps = torch.sum(dispVector * self.platformDir / platformDirNorm, dim=1)
         disps = self.dispDist2 - disps
         dispError = 10 * torch.relu(disps)
         errorMask = dispError > 0

@@ -207,7 +207,9 @@ def make_input_stress_loaders(config, input_points, stress_points=None, stress_d
     return input_loader, stress_loader
 
 
-def make_toolpath_alignment_loaders(config, input_points, stress_points, stress_dirs, stress_weights, boundary_points, boundary_normals):
+def make_toolpath_alignment_loaders(
+    config, input_points, stress_points, stress_dirs, stress_weights, boundary_points, boundary_normals
+):
     """Create input, stress, and boundary loaders for alignment workflows."""
     input_loader, stress_loader = make_input_stress_loaders(
         config,

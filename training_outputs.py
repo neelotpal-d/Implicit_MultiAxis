@@ -126,7 +126,9 @@ class TextProgress:
         if not should_print:
             return
 
-        suffix = " ".join(f"{key}={value:.6g}" if isinstance(value, float) else f"{key}={value}" for key, value in values.items())
+        suffix = " ".join(
+            f"{key}={value:.6g}" if isinstance(value, float) else f"{key}={value}" for key, value in values.items()
+        )
         print(f"{self.label}: epoch {self.current_epoch}/{self.total_epochs} {suffix}")
 
 

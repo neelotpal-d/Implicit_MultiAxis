@@ -21,12 +21,11 @@ reintroduces the bug.
 
 from __future__ import annotations
 
-from pathlib import Path
 import math
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -131,8 +130,15 @@ def test_collision_nan_is_logged_not_silent(capsys):
     out = {"scalars": torch.zeros((4, 1))}
 
     loss_out, record = add_collision_losses(
-        loss_in, inputs, out, grads, scalar_field=None,
-        collision_loss=fake_collision, data=data, config=config, epoch=10,
+        loss_in,
+        inputs,
+        out,
+        grads,
+        scalar_field=None,
+        collision_loss=fake_collision,
+        data=data,
+        config=config,
+        epoch=10,
     )
 
     captured = capsys.readouterr().out.lower()
@@ -141,6 +147,5 @@ def test_collision_nan_is_logged_not_silent(capsys):
         f"anything. captured stdout was: {captured!r}"
     )
     assert torch.isfinite(torch.as_tensor(record)).all(), (
-        "When the collision term is NaN the logged record must be finite "
-        f"(zeroed), not NaN — got {record!r}."
+        f"When the collision term is NaN the logged record must be finite (zeroed), not NaN — got {record!r}."
     )

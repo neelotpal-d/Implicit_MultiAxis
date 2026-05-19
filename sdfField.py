@@ -9,11 +9,12 @@ import igl
 import numpy as np
 import pyvista as pv
 import torch
-from siren_pytorch import SirenNet
 from torch.utils.data import DataLoader, TensorDataset
 
+from siren_pytorch import SirenNet
 
-@dataclass
+
+@dataclass(frozen=True)
 class SDFLossWeights:
     """Weights used when fitting the signed-distance approximation."""
 
@@ -23,7 +24,7 @@ class SDFLossWeights:
     eikonal: float = 1e-1
 
 
-@dataclass
+@dataclass(frozen=True)
 class SDFTrainingConfig:
     """Training controls for the SDF model."""
 

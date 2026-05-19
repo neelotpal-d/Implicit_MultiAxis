@@ -1,9 +1,9 @@
 """Example training pipeline for support-free layer-field optimization."""
 
-from dataclasses import dataclass
-from pathlib import Path
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 # Allow this example script to import shared modules from the repository root
 # when launched directly as `python examples/support_free_pipeline.py`.
@@ -11,7 +11,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import numpy as np
 import pyvista as pv
 import torch
 from torch.optim import lr_scheduler
@@ -38,10 +37,7 @@ from training_outputs import (
 )
 
 
-np.bool = np.bool_
-
-
-@dataclass
+@dataclass(frozen=True)
 class SupportFreePreparedData:
     """Geometry tensors and normalization values needed by the support-free run."""
 
@@ -61,12 +57,6 @@ class SupportFreePreparedData:
 def prepare_data(config: CommonTrainingConfig) -> SupportFreePreparedData:
     """Load mesh samples and boundary/base points for support-free training."""
     bundle = load_geometry_bundle(config, boundary_mode="faces")
-
-    print("---")
-    print(bundle["input_points"].shape)
-    print(bundle["boundary_points"].shape)
-    print("---")
-
     return SupportFreePreparedData(
         mesh=bundle["mesh"],
         mesh_volume=bundle["mesh_volume"],
@@ -140,9 +130,13 @@ def run_training(config: CommonTrainingConfig):
             if batch_losses is None:
                 batch_losses = init_batch_losses(loss)
 
-            loss, collision_record = add_collision_losses(loss, batch_input_points, out, grads, scalar_field, collision_loss, data, config, epoch)
+            loss, collision_record = add_collision_losses(
+                loss, batch_input_points, out, grads, scalar_field, collision_loss, data, config, epoch
+            )
             loss, base_record = add_base_loss(loss, scalar_field, batch_base_points, config, epoch)
-            loss, boundary_record = add_boundary_support_loss(loss, scalar_field, batch_bound_points, batch_bound_normals, config, epoch)
+            loss, boundary_record = add_boundary_support_loss(
+                loss, scalar_field, batch_bound_points, batch_bound_normals, config, epoch
+            )
 
             loss.backward()
             last_loss = loss
@@ -214,4 +208,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

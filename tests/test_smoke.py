@@ -16,8 +16,8 @@ Run with: ``pytest tests/test_smoke.py -v``
 
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -29,7 +29,6 @@ if str(ROOT) not in sys.path:
 
 from repro import default_device, resolve_device, set_global_seed
 from siren_pytorch import SirenNet
-
 
 SHIPPED_FERTILITY_CHECKPOINT = ROOT / "examples" / "checkpoints" / "parametersTest_batched_fertility_10_128_7_7.pt"
 

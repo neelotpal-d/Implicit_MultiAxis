@@ -84,8 +84,7 @@ def _accumulate_collision_term(loss, record, term, weight, name: str, epoch: int
     """
     if not torch.isfinite(term):
         print(
-            f"[warning] {name} collision loss non-finite at epoch {epoch}; "
-            f"this batch's contribution is skipped.",
+            f"[warning] {name} collision loss non-finite at epoch {epoch}; this batch's contribution is skipped.",
             flush=True,
         )
         return loss, record
@@ -100,9 +99,16 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
     col_record = torch.zeros((), dtype=torch.float32)
     lim_vals = [data.x_lim, data.y_lim, data.z_lim]
 
-    col_loss = collision_loss.collision_scalar_loss(batch_input_points, grads, out["scalars"], scalar_field, limVals=lim_vals)["loss"]
+    col_loss = collision_loss.collision_scalar_loss(
+        batch_input_points, grads, out["scalars"], scalar_field, limVals=lim_vals
+    )["loss"]
     loss, col_record = _accumulate_collision_term(
-        loss, col_record, col_loss, collision_weight(epoch, 1e4, 2e4, 4e4), "near", epoch,
+        loss,
+        col_record,
+        col_loss,
+        collision_weight(epoch, 1e4, 2e4, 4e4),
+        "near",
+        epoch,
     )
 
     far_loss = collision_loss.collision_scalar_loss_far(
@@ -114,7 +120,12 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
         n_angles=10,
     )["loss"]
     loss, col_record = _accumulate_collision_term(
-        loss, col_record, far_loss, collision_weight(epoch, 8e3, 1.6e4, 4e4), "far", epoch,
+        loss,
+        col_record,
+        far_loss,
+        collision_weight(epoch, 8e3, 1.6e4, 4e4),
+        "far",
+        epoch,
     )
 
     far_loss2 = collision_loss.collision_scalar_loss_far2(
@@ -126,7 +137,12 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
         n_angles=10,
     )["loss"]
     loss, col_record = _accumulate_collision_term(
-        loss, col_record, far_loss2, collision_weight(epoch, 8e3, 1.6e4, 4e4), "far2", epoch,
+        loss,
+        col_record,
+        far_loss2,
+        collision_weight(epoch, 8e3, 1.6e4, 4e4),
+        "far2",
+        epoch,
     )
 
     if epoch > 0:
@@ -138,7 +154,12 @@ def add_collision_losses(loss, batch_input_points, out, grads, scalar_field, col
             limVals=lim_vals,
         )["loss"]
         loss, col_record = _accumulate_collision_term(
-            loss, col_record, inner_loss, collision_weight(epoch, 8e3, 1.6e4, 4e4), "inner", epoch,
+            loss,
+            col_record,
+            inner_loss,
+            collision_weight(epoch, 8e3, 1.6e4, 4e4),
+            "inner",
+            epoch,
         )
 
     return loss, col_record
@@ -225,7 +246,9 @@ def compute_toolpath_loss(
     return loss, loss.detach(), curvature_loss.detach()
 
 
-def compute_stress_losses(models, batch_s_points, batch_s_dirs, batch_s_wts, batch_min, batch_max, batch_range_lim, epoch: int, config):
+def compute_stress_losses(
+    models, batch_s_points, batch_s_dirs, batch_s_wts, batch_min, batch_max, batch_range_lim, epoch: int, config
+):
     """Align layer/toolpath directions with stress directions at sampled points."""
     if epoch <= 1 or not loss_enabled(config, "use_stress_loss"):
         zero = torch.tensor(0.0, device=batch_s_points.device)

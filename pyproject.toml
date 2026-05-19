@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.15"]
 
 # Pixi configuration for users who prefer pixi over pip. The CUDA wheels of
 # torch require the pytorch-cu* channels; CPU / MPS users can use conda-forge.
@@ -43,11 +44,41 @@ pytest = ">=8.0"
 [tool.pixi.pypi-dependencies]
 # pixi resolves torch and libigl via pip so the user gets the right wheel
 # for CUDA / MPS / CPU and so libigl is picked up from PyPI where conda-forge
-# packaging lags behind on macos-arm64.
+# packaging lags behind on macos-arm64. ruff is a dev tool kept here so it
+# is not pulled in by downstream pip installs of this project.
 torch = ">=2.1"
 libigl = ">=2.5"
+ruff = ">=0.15"
 
 [tool.pixi.tasks]
 support-free = "python examples/support_free_pipeline.py examples/configs/support_free_config.json"
 toolpath-alignment = "python examples/toolpath_alignment_pipeline.py examples/configs/toolpath_alignment_config.json"
 smoke = "pytest tests/test_smoke.py -v"
+test = "pytest tests/ -v"
+fmt = "ruff format ."
+lint = "ruff check ."
+
+# Ruff configuration. Line length kept moderate; SIREN math expressions can
+# be wide. We leave the legacy goodCopies folder out of linting.
+[tool.ruff]
+line-length = 120
+extend-exclude = ["examples/inputs/goodCopies"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",  # line length checked by formatter
+    "E741",  # short names like `l` are domain-meaningful (length)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Example scripts and tests prepend the repo root to sys.path *before* the
+# repo-local imports run, so module-level imports below the path-insert are
+# expected. E402 fires on each such import; suppress the noise.
+"examples/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+# collisionLoss.py has leftover dead local assignments from a prior refactor
+# (grad_dirns, z_axis, angle_offset). These will be removed when the file's
+# 5x init_tool_* / 3x sample_tangent_circle / 3x cone-sampler duplicates are
+# consolidated. Suppressed here until that refactor lands.
+"collisionLoss.py" = ["F841"]

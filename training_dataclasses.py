@@ -1,7 +1,7 @@
 """JSON-backed config object shared by example training pipelines."""
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 
 
 @dataclass
@@ -120,7 +120,7 @@ def loss_enabled(config, field_name):
 
 def load_config(config_path):
     """Create a CommonTrainingConfig from a JSON file."""
-    with open(config_path, "r") as file:
+    with open(config_path) as file:
         values = json.load(file)
 
     config = CommonTrainingConfig()
