@@ -15,7 +15,7 @@ import pyvista as pv
 import torch
 from torch.optim import lr_scheduler
 
-from collisionLoss import collison_loss
+from collisionLoss import CollisionLoss
 from experiment_loaders import build_field_bundle, load_geometry_bundle, make_support_free_loaders
 from field_losses import (
     add_base_loss,
@@ -79,7 +79,7 @@ def build_scalar_field(config: CommonTrainingConfig):
 
 def build_collision_loss(data: SupportFreePreparedData, config: CommonTrainingConfig):
     """Create the collision loss with the current tool/sample settings."""
-    collision_loss = collison_loss(
+    collision_loss = CollisionLoss(
         config.collision_sample_count,
         config.collision_angle_degrees,
         device=config.device,

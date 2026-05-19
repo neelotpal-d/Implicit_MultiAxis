@@ -367,7 +367,7 @@ def sample_along_gradient(tangent_samples, gradients, distances):
     return sampled_points
 
 
-class collison_loss:
+class CollisionLoss:
     """
     Additive-style collision loss.
 
@@ -869,7 +869,7 @@ class collison_loss:
         return inMask
 
 
-class collison_loss_milling:
+class CollisionLossMilling:
     """
     Milling-style collision loss.
 
