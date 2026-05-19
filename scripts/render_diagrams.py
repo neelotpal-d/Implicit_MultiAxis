@@ -68,6 +68,46 @@ PAPER_FIELD_CMAP = mpl.colors.LinearSegmentedColormap.from_list(
 )
 
 
+# Register fonts shipped by the pixi env (under $PREFIX/fonts/) into
+# matplotlib's font manager. Conda installs them there but matplotlib only
+# scans OS-standard locations by default — so without this step the freshly-
+# installed IBM Plex Sans is invisible to the build.
+def _register_pixi_fonts() -> None:
+    import matplotlib.font_manager as _fm
+
+    pixi_font_dir = Path(sys.prefix) / "fonts"
+    if not pixi_font_dir.exists():
+        return
+    for font_path in (*pixi_font_dir.glob("*.ttf"), *pixi_font_dir.glob("*.otf")):
+        _fm.fontManager.addfont(str(font_path))
+
+
+_register_pixi_fonts()
+
+
+# Verify a Helvetica-class sans-serif is installed before we render anything.
+# If we silently fall through to DejaVu the figures look amateurish — better
+# to fail loud at the top of the build than ship ugly PNGs.
+_REQUIRED_SANS = ("IBM Plex Sans", "Helvetica", "Helvetica Neue", "Arial")
+
+
+def _verify_fonts() -> None:
+    import matplotlib.font_manager as _fm
+
+    installed = {f.name for f in _fm.fontManager.ttflist}
+    found = [name for name in _REQUIRED_SANS if name in installed]
+    if not found:
+        raise RuntimeError(
+            "No Helvetica-class sans-serif font installed. Expected at least "
+            f"one of: {list(_REQUIRED_SANS)}. On pixi: `font-ttf-ibm-plex-sans` "
+            "is a hard dep; clear matplotlib's font cache "
+            "(~/.cache/matplotlib) and re-render if it was just installed."
+        )
+
+
+_verify_fonts()
+
+
 mpl.rcParams.update({
     "figure.dpi": 130,
     "savefig.dpi": 300,
@@ -75,7 +115,7 @@ mpl.rcParams.update({
     "savefig.pad_inches": 0.12,
     "savefig.facecolor": "white",
     "font.family": "sans-serif",
-    "font.sans-serif": ["Helvetica", "Helvetica Neue", "Arial", "DejaVu Sans"],
+    "font.sans-serif": list(_REQUIRED_SANS) + ["DejaVu Sans"],
     "font.size": 11,
     "mathtext.fontset": "stix",
     "mathtext.default": "regular",
